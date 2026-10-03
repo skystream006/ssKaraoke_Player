@@ -1,6 +1,7 @@
 package com.sskaraoke.player
 
 import android.os.Looper
+import android.os.Build
 import android.graphics.Color
 import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.GradientDrawable
@@ -39,6 +40,31 @@ class PreviewActivity : MainActivity() {
 @Config(sdk = [35], qualifiers = "w320dp-h800dp-port-mdpi")
 @GraphicsMode(GraphicsMode.Mode.LEGACY)
 class NativeUiTest {
+    @Test
+    @Config(sdk = [26, 27, 35])
+    fun themePreservesSharedStylesAndUsesLightNavigationIcons() {
+        val context = RuntimeEnvironment.getApplication()
+        context.setTheme(R.style.Theme_SsKaraoke)
+        val attributes = context.obtainStyledAttributes(intArrayOf(
+            com.google.android.material.R.attr.colorPrimary,
+            android.R.attr.windowBackground,
+            android.R.attr.fontFamily,
+            android.R.attr.windowLightStatusBar
+        ))
+        try {
+            assertEquals(Color.parseColor("#B44FFF"), attributes.getColor(0, 0))
+            assertEquals(Color.parseColor("#0E0820"), attributes.getColor(1, 0))
+            assertEquals(R.font.manrope, attributes.getResourceId(2, 0))
+            assertFalse(attributes.getBoolean(3, true))
+        } finally { attributes.recycle() }
+        if (Build.VERSION.SDK_INT >= 27) {
+            val navigation = context.obtainStyledAttributes(intArrayOf(android.R.attr.windowLightNavigationBar))
+            try {
+                assertFalse(navigation.getBoolean(0, true))
+            } finally { navigation.recycle() }
+        }
+    }
+
     @Test
     @Config(sdk = [26, 28, 35])
     fun firstLaunchHasServerEntryAndAccessibleSettings() {
