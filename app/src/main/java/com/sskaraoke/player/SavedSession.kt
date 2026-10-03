@@ -44,6 +44,11 @@ data class SavedSession(
 
     fun signedOut(): SavedSession = SavedSession(origin = origin, theme = theme)
 
+    fun switchUser(): SavedSession {
+        if (token.isEmpty() || level !in setOf("member", "admin")) return this
+        return copy(usernameRequired = true, memberId = "", memberName = "", memberRole = "", route = "/", view = "{}")
+    }
+
     companion object {
         val themes = linkedMapOf(
             "neonPurple" to "Neon Purple", "ocean" to "Ocean", "forest" to "Forest",

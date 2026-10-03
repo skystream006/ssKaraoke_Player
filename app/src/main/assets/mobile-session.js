@@ -39,11 +39,12 @@
         session.setItem("authLevel", saved.level);
         for (const key of ["memberId", "memberName", "memberRole"]) {
             if (typeof saved[key] === "string" && saved[key]) session.setItem(key, saved[key]);
+            else session.removeItem(key);
         }
         if (validUsername(saved.username)) {
             local.setItem("defaultUsername", saved.username.trim());
-            session.removeItem("usernameRequired");
-        } else if (saved.usernameRequired) {
+        }
+        if (saved.usernameRequired) {
             session.setItem("usernameRequired", "true");
         } else {
             session.removeItem("usernameRequired");

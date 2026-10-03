@@ -14,7 +14,7 @@ function storage(values = {}) {
 test("a recreated WebView restores login and the chosen username before React starts", () => {
     const session = storage();
     const local = storage();
-    restoreSession(session, local, { token: "saved-token", level: "member", username: "  Alex  ", usernameRequired: true });
+    restoreSession(session, local, { token: "saved-token", level: "member", username: "  Alex  ", usernameRequired: false });
     assert.deepEqual(readSession(session, local), {
         token: "saved-token", level: "member", username: "Alex", usernameRequired: false,
         memberId: "", memberName: "", memberRole: ""
@@ -25,6 +25,19 @@ test("an unfinished password login still requires a username", () => {
     const session = storage();
     restoreSession(session, storage(), { token: "token", level: "admin", username: "", usernameRequired: true });
     assert.equal(session.getItem("usernameRequired"), "true");
+});
+
+test("switching users preserves authentication and prefills the old name without skipping username selection", () => {
+    const session = storage({ memberId: "old-member", memberName: "Alex", memberRole: "organizer" });
+    const local = storage();
+    restoreSession(session, local, {
+        token: "saved-token", level: "admin", username: "Alex", usernameRequired: true,
+        memberId: "", memberName: "", memberRole: ""
+    });
+    assert.deepEqual(readSession(session, local), {
+        token: "saved-token", level: "admin", username: "Alex", usernameRequired: true,
+        memberId: "", memberName: "", memberRole: ""
+    });
 });
 
 test("QR sessions do not gain an extra username requirement", () => {

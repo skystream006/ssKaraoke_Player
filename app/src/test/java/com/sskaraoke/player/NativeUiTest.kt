@@ -18,6 +18,7 @@ import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 import org.robolectric.shadows.ShadowDialog
+import org.robolectric.util.ReflectionHelpers
 
 class PreviewActivity : MainActivity() {
     override fun automaticUpdateChecks() = false
@@ -55,6 +56,7 @@ class NativeUiTest {
             assertTrue(update.isEnabled)
             assertTrue(update.width > 200)
             assertTrue(update.height >= 48)
+            assertFalse(descendants(root).filterIsInstance<MaterialButton>().any { it.text == "Switch user" })
             val themes = descendants(root).filterIsInstance<RadioButton>().toList()
             assertEquals(SavedSession.themes.values.toList(), themes.map { it.text.toString() })
             assertTrue(themes.all { it.compoundDrawablesRelative[2] != null })
@@ -62,6 +64,26 @@ class NativeUiTest {
             ocean.performClick()
             assertTrue(ocean.isChecked)
             dialog.dismiss()
+        }
+    }
+
+    @Test fun switchUserButtonPreservesLoginAndStartsUsernameSelection() {
+        Robolectric.buildActivity(PreviewActivity::class.java).setup().use { controller ->
+            val activity = controller.get()
+            val store = ReflectionHelpers.getField<SessionStore>(activity, "store")
+            val saved = SavedSession(origin = "https://karaoke.example", token = "valid", level = "admin", password = "secret",
+                username = "Alex", memberId = "member-1", memberName = "Alex", memberRole = "organizer", route = "/organizer/party-1/member-1")
+            store.update(saved)
+            descendants(activity.window.decorView).filterIsInstance<MaterialToolbar>().single().menu.performIdentifierAction(2, 0)
+            val dialog = ShadowDialog.getLatestDialog()
+            val root = dialog.window!!.decorView
+            measure(root, 320, 800)
+            val switch = descendants(root).filterIsInstance<MaterialButton>().single { it.text == "Switch user" }
+            assertTrue(switch.isEnabled)
+            assertTextFits(switch)
+            switch.performClick()
+            assertFalse(dialog.isShowing)
+            assertEquals(saved.switchUser(), store.current)
         }
     }
 

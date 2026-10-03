@@ -35,6 +35,28 @@ class SessionTest {
         assertEquals("", changed.signedOut().token)
     }
 
+    @Test fun switchingUserKeepsLoginAndClearsOnlyTheActiveMemberAndLocation() {
+        for (level in listOf("member", "admin")) {
+            val saved = SavedSession(origin = "https://karaoke.example", token = "valid", level = level,
+                password = "secret", username = "Alex", memberId = "member-1", memberName = "Alex",
+                memberRole = "organizer", route = "/organizer/party-1/member-1", theme = "forest", view = "{\"tab\":\"search\"}")
+            val switched = saved.switchUser()
+            assertEquals(saved.copy(usernameRequired = true, memberId = "", memberName = "", memberRole = "", route = "/", view = "{}"), switched)
+            assertEquals(switched, SavedSession.fromJson(switched.toJson()))
+            assertTrue(switched.seed().getBoolean("usernameRequired"))
+            assertFalse(switched.seed().has("password"))
+        }
+    }
+
+    @Test fun switchingQrUserDoesNotRequestAPasswordOrChangeAuthenticationKind() {
+        val switched = SavedSession(origin = "https://karaoke.example", token = "qr-token", level = "member", kind = "qr").switchUser()
+        assertTrue(switched.usernameRequired)
+        assertEquals("qr", switched.kind)
+        assertEquals("qr-token", switched.token)
+        assertEquals("", switched.password)
+        assertEquals(SavedSession(), SavedSession().switchUser())
+    }
+
     @Test fun validSessionDoesNotResendPassword() = runBlocking {
         MockWebServer().use { server ->
             server.enqueue(MockResponse().setBody("[]"))

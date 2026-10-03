@@ -1,4 +1,4 @@
-const { test, expect } = require("@playwright/test");
+const { test: base, expect } = require("@playwright/test");
 const fs = require("node:fs");
 const path = require("node:path");
 
@@ -7,20 +7,26 @@ const partyId = "11111111-1111-4111-8111-111111111111";
 const memberId = "22222222-2222-4222-8222-222222222222";
 const route = `/guest/${partyId}/${memberId}`;
 const seed = {
-    token: "test-session", level: "member", username: "Alex", usernameRequired: true,
+    token: "test-session", level: "member", username: "Alex", usernameRequired: false,
     memberId, memberName: "Alex", memberRole: "guest", route, theme: "ocean",
     view: { tab: "queue", scroll: {} }
 };
+const test = base.extend({ savedSession: [seed, { option: true }] });
 const queue = ["City Lights", "Summer Nights", "Second Verse"].map((title, index) => ({
     id: `33333333-3333-4333-8333-33333333333${index}`, video_id: `video-${index}`, video_title: title,
     video_thumbnail: "/test-icon.png", singer_name: "Alex", position: index + 1, status: "queued"
 }));
 
-test.beforeEach(async ({ context, page }) => {
+test.beforeEach(async ({ context, page, savedSession }) => {
     await context.addInitScript({ content: `if(window===window.top){
         window.nativeEvents=[];
-        window.KaraokeHost={postMessage:message=>window.nativeEvents.push(JSON.parse(message))};
-        window.__karaokeSeed=${JSON.stringify(seed)};
+        const writeStorage = Storage.prototype.setItem;
+        window.KaraokeHost={postMessage:message=>{
+            const event=JSON.parse(message);
+            window.nativeEvents.push(event);
+            if(event.type==='snapshot') writeStorage.call(sessionStorage,'native-test-checkpoint',JSON.stringify(event.state));
+        }};
+        window.__karaokeSeed=JSON.parse(sessionStorage.getItem('native-test-checkpoint') || ${JSON.stringify(JSON.stringify(savedSession))});
         window.__karaokeCss=${JSON.stringify(asset("mobile-shell.css"))};
         ${asset("mobile-session.js")}
         ${asset("mobile-shell.js")}
@@ -36,6 +42,8 @@ test.beforeEach(async ({ context, page }) => {
             body = status === 401 ? { error: "Invalid password" } : { token: "authenticated-token", level: "member" };
         } else if (url.pathname.startsWith("/api/queue/")) {
             body = queue;
+        } else if (url.pathname === "/api/parties/members/names") {
+            body = [{ name: "Alex" }, { name: "Blair" }];
         } else if (url.pathname.includes("/members/")) {
             body = { id: memberId, name: "Alex", role: "guest" };
         } else if (url.pathname === "/api/parties") {
@@ -45,8 +53,36 @@ test.beforeEach(async ({ context, page }) => {
         }
         await interception.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
     });
-    await page.goto(route);
-    await expect(page.locator(".guest-layout")).toBeVisible();
+    await page.goto(savedSession.route);
+    if (savedSession.usernameRequired) await expect(page.getByLabel("Default username")).toBeVisible();
+    else await expect(page.locator(".guest-layout")).toBeVisible();
+});
+
+test.describe("switch user", () => {
+    test.use({ savedSession: { ...seed, usernameRequired: true, memberId: "", memberName: "", memberRole: "", route: "/", view: {} } });
+
+    test("changes and remembers the default username without password login or reusing the previous member", async ({ page }) => {
+        const mutations = [];
+        page.on("request", request => {
+            if (request.url().includes("/api/") && request.method() !== "GET") mutations.push(request.url());
+        });
+        await expect(page.getByLabel("Default username")).toHaveValue("Alex");
+        await expect(page.locator('input[type="password"]')).toHaveCount(0);
+        await page.reload();
+        await expect(page.getByLabel("Default username")).toHaveValue("Alex");
+        if (process.env.KARAOKE_FRONTEND_BUILD) {
+            await expect(page.locator('#default-username-options option[value="Blair"]')).toHaveCount(1);
+        }
+        await page.getByLabel("Default username").fill("Blair");
+        await page.getByRole("button", { name: "Continue", exact: true }).click();
+        await expect(page.getByLabel("Default username")).toHaveCount(0);
+        await expect.poll(() => page.evaluate(() => JSON.parse(sessionStorage.getItem("native-test-checkpoint"))?.username)).toBe("Blair");
+        await page.reload();
+        await expect(page.locator(".password-modal")).toHaveCount(0);
+        const restored = await page.evaluate(() => window.KaraokeMobileSession.readSession(sessionStorage, localStorage));
+        expect(restored).toEqual({ token: "test-session", level: "member", username: "Blair", usernameRequired: false, memberId: "", memberName: "", memberRole: "" });
+        expect(mutations).toEqual([]);
+    });
 });
 
 test("restores login, member identity, theme, and the selected tab before continuing", async ({ page }, testInfo) => {

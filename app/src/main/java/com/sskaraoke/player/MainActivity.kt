@@ -475,6 +475,12 @@ open class MainActivity : AppCompatActivity() {
         val identity = store.current.username.ifEmpty { store.current.memberName }.ifEmpty { "Not signed in" }
         body.addView(text(identity, 15f), rowParams(8, 12))
         if (store.current.origin.isNotEmpty()) {
+            if (store.current.token.isNotEmpty() && store.current.level in setOf("member", "admin")) {
+                body.addView(button("Switch user", true) {
+                    dialog.dismiss()
+                    switchUser()
+                }, rowParams(8))
+            }
             body.addView(button("Open party link", true) { promptJoinLink(dialog) }, rowParams(8))
             if (store.current.level == "admin") body.addView(button("Server administration", true) {
                 dialog.dismiss(); navigate("/settings")
@@ -631,6 +637,14 @@ open class MainActivity : AppCompatActivity() {
         val value = incoming.getStringExtra(Intent.EXTRA_TEXT)?.trim()?.take(2048) ?: return
         val link = Regex("https?://\\S+").find(value)?.value ?: value
         if (store.current.origin.isEmpty()) showServerSetup(link) else promptJoinLink(prefill = link)
+    }
+
+    private fun switchUser() {
+        connectionJob?.cancel()
+        sessionClient.cancel()
+        disposeWebView()
+        store.update(store.current.switchUser())
+        showWebView()
     }
 
     private fun clearSession(replacement: SavedSession) {

@@ -25,6 +25,21 @@
     <script>
         history.replaceState({ idx: 0 }, "", location.href);
         const root = document.querySelector("#root");
+        function render() {
+        if (sessionStorage.getItem("usernameRequired") === "true") {
+            root.innerHTML = '<div class="password-modal"><form><input aria-label="Default username" maxlength="60" required><button type="submit">Continue</button></form></div>';
+            const input = root.querySelector("input");
+            input.value = localStorage.getItem("defaultUsername") || "";
+            root.querySelector("form").addEventListener("submit", event => {
+                event.preventDefault();
+                const username = input.value.trim();
+                if (!username || username.length > 60) return;
+                localStorage.setItem("defaultUsername", username);
+                sessionStorage.removeItem("usernameRequired");
+                render();
+            });
+            return;
+        }
         root.innerHTML = '<div class="guest-layout"><header class="guest-header">Fixture party <span class="member-badge"></span><div class="theme-picker"><button>Theme</button></div></header><nav class="mobile-tabs"><button class="mobile-tab active">Search</button><button class="mobile-tab">Queue</button><button class="mobile-tab">Status</button></nav><main class="guest-main"><section class="search-section"><input aria-label="Search songs"><p>Search results</p></section><section class="queue-section mobile-hidden"><ul class="playlist-list"><li class="playlist-item"><div class="playlist-item-row"><div class="drag-handle" role="button" tabindex="0">::</div><img class="playlist-thumb" src="/test-icon.png" alt="Song artwork"><span class="playlist-title">City Lights</span></div></li></ul></section></main></div>';
         document.querySelector(".member-badge").textContent = sessionStorage.getItem("memberName") || "Guest";
         document.querySelectorAll(".mobile-tab").forEach(button => button.addEventListener("click", () => {
@@ -32,6 +47,8 @@
             document.querySelector(".queue-section").classList.toggle("mobile-hidden", button.textContent !== "Queue");
             document.querySelector(".search-section").classList.toggle("mobile-hidden", button.textContent !== "Search");
         }));
+        }
+        render();
     </script>
 </body>
 </html>
