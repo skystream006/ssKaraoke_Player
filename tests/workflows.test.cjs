@@ -6,6 +6,14 @@ const YAML = require("yaml");
 
 const workflow = name => YAML.parse(fs.readFileSync(path.resolve(__dirname, `../.github/workflows/${name}.yml`), "utf8"));
 
+test("release SDK setup installs supported packages instead of obsolete tools", () => {
+    const steps = workflow("manual-release").jobs.release.steps;
+    const setup = steps.find(step => step.uses?.startsWith("android-actions/setup-android@"));
+    assert.equal(setup.with?.packages, "platform-tools");
+    const install = steps.find(step => step.name === "Install Android SDK");
+    assert.match(install.run, /sdkmanager 'platforms;android-36' 'build-tools;36\.0\.0'/);
+});
+
 test("release is manual, builds full main history, verifies signing, and never overwrites a release", () => {
     const release = workflow("manual-release");
     assert.deepEqual(Object.keys(release.on), ["workflow_dispatch"]);
@@ -32,12 +40,11 @@ test("PR reminder never checks out or executes pull request code", () => {
     assert.doesNotMatch(script, /checkout|git clone|github\.event\.pull_request\.(title|body|head)/);
 });
 
-test("CI has read-only permissions and covers native and browser tests", () => {
-    const checks = workflow("android");
-    assert.deepEqual(checks.permissions, { contents: "read" });
-    const commands = checks.jobs.verify.steps.map(step => step.run || "").join("\n");
+test("release covers native and browser tests, lint, and APK assembly", () => {
+    const release = workflow("manual-release");
+    const commands = release.jobs.release.steps.map(step => step.run || "").join("\n");
     assert.match(commands, /npm run test:browser/);
     assert.match(commands, /:app:testDebugUnitTest/);
-    assert.match(commands, /:app:lintDebug/);
-    assert.match(commands, /:app:assembleDebugAndroidTest/);
+    assert.match(commands, /:app:lintRelease/);
+    assert.match(commands, /:app:assembleRelease/);
 });
