@@ -1,16 +1,27 @@
 package com.sskaraoke.player
 
 import android.os.Looper
+import android.graphics.Color
+import android.graphics.drawable.ColorDrawable
+import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.InsetDrawable
 import android.view.View
 import android.view.ViewGroup
+import android.widget.HorizontalScrollView
 import android.widget.RadioButton
+import android.widget.RadioGroup
 import android.widget.TextView
+import androidx.appcompat.widget.AppCompatImageButton
+import androidx.core.graphics.Insets
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import com.google.android.material.appbar.MaterialToolbar
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.textfield.TextInputEditText
 import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.json.JSONObject
 import org.robolectric.Robolectric
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
@@ -37,16 +48,24 @@ class NativeUiTest {
             val connect = descendants(root).filterIsInstance<MaterialButton>().single { it.text == "Connect" }
             assertTrue(connect.isShown)
             assertTrue(connect.height >= 48)
-            val toolbar = descendants(root).filterIsInstance<MaterialToolbar>().single()
-            assertTrue(toolbar.menu.findItem(2).isVisible)
-            assertFalse(toolbar.menu.findItem(1).isVisible)
+            assertFalse(descendants(root).any { it is MaterialToolbar })
+            val settings = settingsButton(activity)
+            assertEquals(0.5f, settings.alpha)
+            assertTrue(settings.isShown)
+            assertTrue(settings.width >= 48 && settings.height >= 48)
+            assertTrue(settings.left > 240 && settings.top > 700)
+            val chrome = settings.parent as View
+            ViewCompat.dispatchApplyWindowInsets(chrome, WindowInsetsCompat.Builder()
+                .setInsets(WindowInsetsCompat.Type.systemBars(), Insets.of(0, 24, 0, 32)).build())
+            measure(root, 320, 800)
+            assertEquals(800 - 32 - 16 - 48, settings.top)
         }
     }
 
     @Test fun settingsHasARealUpdateButtonAndAllSixSwatchesBeforeLogin() {
         Robolectric.buildActivity(PreviewActivity::class.java).setup().use { controller ->
             val activity = controller.get()
-            descendants(activity.window.decorView).filterIsInstance<MaterialToolbar>().single().menu.performIdentifierAction(2, 0)
+            settingsButton(activity).performClick()
             shadowOf(Looper.getMainLooper()).idle()
             val dialog = ShadowDialog.getLatestDialog()
             val root = dialog.window!!.decorView
@@ -58,11 +77,17 @@ class NativeUiTest {
             assertTrue(update.height >= 48)
             assertFalse(descendants(root).filterIsInstance<MaterialButton>().any { it.text == "Switch user" })
             val themes = descendants(root).filterIsInstance<RadioButton>().toList()
-            assertEquals(SavedSession.themes.values.toList(), themes.map { it.text.toString() })
-            assertTrue(themes.all { it.compoundDrawablesRelative[2] != null })
-            val ocean = themes.single { it.text == "Ocean" }
+            assertEquals(SavedSession.themes.values.toList(), themes.map { it.contentDescription.toString() })
+            assertTrue(themes.all { it.text.isEmpty() && it.width >= 48 && it.height >= 48 })
+            val group = themes.first().parent as RadioGroup
+            assertEquals(RadioGroup.HORIZONTAL, group.orientation)
+            assertTrue(group.parent is HorizontalScrollView)
+            assertEquals(1, themes.map { it.top }.distinct().size)
+            assertTrue(themes.zipWithNext().all { (first, second) -> first.right <= second.left })
+            val ocean = themes.single { it.contentDescription == "Ocean" }
             ocean.performClick()
             assertTrue(ocean.isChecked)
+            assertEquals(1, themes.count { it.isChecked })
             dialog.dismiss()
         }
     }
@@ -74,7 +99,7 @@ class NativeUiTest {
             val saved = SavedSession(origin = "https://karaoke.example", token = "valid", level = "admin", password = "secret",
                 username = "Alex", memberId = "member-1", memberName = "Alex", memberRole = "organizer", route = "/organizer/party-1/member-1")
             store.update(saved)
-            descendants(activity.window.decorView).filterIsInstance<MaterialToolbar>().single().menu.performIdentifierAction(2, 0)
+            settingsButton(activity).performClick()
             val dialog = ShadowDialog.getLatestDialog()
             val root = dialog.window!!.decorView
             measure(root, 320, 800)
@@ -92,7 +117,7 @@ class NativeUiTest {
         try {
             Robolectric.buildActivity(PreviewActivity::class.java).setup().use { controller ->
                 val activity = controller.get()
-                descendants(activity.window.decorView).filterIsInstance<MaterialToolbar>().single().menu.performIdentifierAction(2, 0)
+                settingsButton(activity).performClick()
                 val dialog = ShadowDialog.getLatestDialog()
                 val root = dialog.window!!.decorView
                 measure(root, 320, 800)
@@ -102,6 +127,63 @@ class NativeUiTest {
             }
         } finally { RuntimeEnvironment.setFontScale(1f) }
     }
+
+    @Test fun allThemesRecolorNativeViewsWithoutDiscardingFormInput() {
+        Robolectric.buildActivity(PreviewActivity::class.java).setup().use { controller ->
+            val activity = controller.get()
+            val store = ReflectionHelpers.getField<SessionStore>(activity, "store")
+            val input = descendants(activity.window.decorView).filterIsInstance<TextInputEditText>().single()
+            input.setText("https://karaoke.example")
+            val palettes = JSONObject(activity.assets.open("color-themes.json").bufferedReader().use { it.readText() })
+            assertEquals(SavedSession.themes.keys, palettes.keys().asSequence().toSet())
+            settingsButton(activity).performClick()
+            val dialog = ShadowDialog.getLatestDialog()
+            val root = dialog.window!!.decorView
+            measure(root, 320, 800)
+            val swatches = descendants(root).filterIsInstance<RadioButton>().toList()
+            val update = descendants(root).filterIsInstance<MaterialButton>().single { it.text == "Check for updates" }
+            val appRoot = ReflectionHelpers.getField<View>(activity, "root")
+            for (key in SavedSession.themes.keys) {
+                val palette = palettes.getJSONObject(key)
+                fun color(property: String) = Color.parseColor(palette.getString(property))
+                val swatch = swatches.single { it.tag == key }
+                swatch.performClick()
+                assertEquals(key, store.current.theme)
+                assertEquals(key, SavedSession.fromJson(store.current.toJson()).theme)
+                assertEquals(1, swatches.count { it.isChecked })
+                val circle = (swatch.background.current as InsetDrawable).drawable as GradientDrawable
+                assertEquals(color("--primary"), circle.color!!.defaultColor)
+                assertEquals(color("--primary"), update.backgroundTintList!!.defaultColor)
+                assertEquals(color("--bg-dark"), update.currentTextColor)
+                assertEquals(color("--bg-dark"), (appRoot.background as ColorDrawable).color)
+                assertEquals(color("--bg-dark"), (root.background as ColorDrawable).color)
+                assertEquals(color("--text-primary"), input.currentTextColor)
+                assertEquals(color("--primary"), settingsButton(activity).imageTintList!!.defaultColor)
+                assertEquals("https://karaoke.example", input.text.toString())
+            }
+            dialog.dismiss()
+            settingsButton(activity).performClick()
+            val reopened = ShadowDialog.getLatestDialog()
+            val selected = descendants(reopened.window!!.decorView).filterIsInstance<RadioButton>().single { it.isChecked }
+            assertEquals("dark", selected.tag)
+            reopened.dismiss()
+        }
+    }
+
+    @Test fun staleWebSnapshotsCannotUndoNativeThemeSelection() {
+        Robolectric.buildActivity(PreviewActivity::class.java).setup().use { controller ->
+            val activity = controller.get()
+            val store = ReflectionHelpers.getField<SessionStore>(activity, "store")
+            store.update(store.current.copy(theme = "forest"))
+            ReflectionHelpers.callInstanceMethod<Unit>(activity, "receiveMessage",
+                ReflectionHelpers.ClassParameter.from(JSONObject::class.java,
+                    JSONObject().put("type", "snapshot").put("state", SavedSession(theme = "ocean").seed())))
+            assertEquals("forest", store.current.theme)
+        }
+    }
+
+    private fun settingsButton(activity: MainActivity) =
+        descendants(activity.window.decorView).filterIsInstance<AppCompatImageButton>().single { it.contentDescription == "App settings" }
 
     private fun assertTextFits(view: TextView) {
         val layout = view.layout

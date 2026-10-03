@@ -3,6 +3,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const asset = name => fs.readFileSync(path.resolve(__dirname, "../../app/src/main/assets", name), "utf8");
+const themes = JSON.parse(asset("color-themes.json"));
 const partyId = "11111111-1111-4111-8111-111111111111";
 const memberId = "22222222-2222-4222-8222-222222222222";
 const route = `/guest/${partyId}/${memberId}`;
@@ -28,6 +29,7 @@ test.beforeEach(async ({ context, page, savedSession }) => {
         }};
         window.__karaokeSeed=JSON.parse(sessionStorage.getItem('native-test-checkpoint') || ${JSON.stringify(JSON.stringify(savedSession))});
         window.__karaokeCss=${JSON.stringify(asset("mobile-shell.css"))};
+        window.__karaokeThemes=${JSON.stringify(themes)};
         ${asset("mobile-session.js")}
         ${asset("mobile-shell.js")}
     }` });
@@ -92,6 +94,8 @@ test("restores login, member identity, theme, and the selected tab before contin
     await expect(page.locator(".mobile-tab.active")).toContainText("Queue");
     await expect(page.locator(".theme-picker")).toBeHidden();
     expect(await page.evaluate(() => localStorage.getItem("karaokeTheme"))).toBe("ocean");
+    expect(await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue("--primary").trim())).toBe(themes.ocean["--primary"]);
+    await expect(page.locator("body")).toHaveCSS("background-color", "rgb(0, 18, 25)");
     await page.screenshot({ path: testInfo.outputPath("restored-guest.png"), fullPage: true });
 });
 
@@ -150,14 +154,27 @@ test("a horizontal swipe switches tabs while a drag-handle swipe does not", asyn
     await page.clock.resume();
 });
 
-test("theme changes stay in place without reloading the party", async ({ page }) => {
+test("all theme colors update in place and survive reloads", async ({ page }) => {
     await page.evaluate(() => {
         window.renderMarker = "same-document";
-        window.KaraokeAndroid.applyTheme("forest");
     });
-    expect(await page.evaluate(() => localStorage.getItem("karaokeTheme"))).toBe("forest");
-    expect(await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue("--primary").trim())).toBe("#52b788");
-    expect(await page.evaluate(() => window.renderMarker)).toBe("same-document");
+    for (const [key, palette] of Object.entries(themes)) {
+        await page.evaluate(key => window.KaraokeAndroid.applyTheme(key), key);
+        expect(await page.evaluate(() => localStorage.getItem("karaokeTheme"))).toBe(key);
+        const applied = await page.evaluate(properties => {
+            const style = getComputedStyle(document.documentElement);
+            return Object.fromEntries(properties.map(property => [property, style.getPropertyValue(property).trim()]));
+        }, Object.keys(palette));
+        expect(applied).toEqual(palette);
+        expect(await page.evaluate(() => window.renderMarker)).toBe("same-document");
+        await expect.poll(() => page.evaluate(() => JSON.parse(sessionStorage.getItem("native-test-checkpoint"))?.theme)).toBe(key);
+    }
+    await page.evaluate(() => window.KaraokeAndroid.applyTheme("__proto__"));
+    expect(await page.evaluate(() => localStorage.getItem("karaokeTheme"))).toBe("dark");
+    await page.reload();
+    await expect(page.locator(".mobile-tab.active")).toContainText("Queue");
+    expect(await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue("--primary").trim())).toBe(themes.dark["--primary"]);
+    await expect(page.locator("body")).toHaveCSS("background-color", "rgb(10, 10, 13)");
 });
 
 test("real server playlist reorders with a touch long-press and calls the reorder endpoint", async ({ page, context }) => {

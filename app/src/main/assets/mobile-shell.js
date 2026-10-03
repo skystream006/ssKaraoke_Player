@@ -5,17 +5,8 @@
     const seed = window.__karaokeSeed || {};
     delete window.__karaokeSeed;
     contract.restoreSession(sessionStorage, localStorage, seed);
-    if (seed.theme) localStorage.setItem("karaokeTheme", seed.theme);
-
-    const themes = {
-        neonPurple: ["#b44fff", "#9633e0", "#2d1b69", "#ff6ec7", "#d94fa8", "#0e0820", "#180f35", "#2d1b69", "#f0e6ff", "#b89fd4", "rgba(180,79,255,0.2)", "0 4px 20px rgba(100,0,200,0.4)"],
-        ocean: ["#00c9c8", "#009e9d", "#005f73", "#94d2bd", "#6bb5a0", "#001219", "#001f2e", "#005f73", "#e9f5f5", "#8ecfce", "rgba(0,201,200,0.15)", "0 4px 20px rgba(0,80,100,0.5)"],
-        forest: ["#52b788", "#3a8f68", "#1b4332", "#d8f3dc", "#a8cfae", "#081c15", "#0d2818", "#1b4332", "#d8f3dc", "#95c9a8", "rgba(82,183,136,0.15)", "0 4px 20px rgba(0,50,20,0.5)"],
-        sunset: ["#ff6b35", "#e04e18", "#5c2a00", "#ffd166", "#e6b030", "#1a0a00", "#2b1200", "#5c2a00", "#fff0e6", "#d4a07a", "rgba(255,107,53,0.2)", "0 4px 20px rgba(120,40,0,0.5)"],
-        midnightGold: ["#f5c518", "#c9a000", "#2e2500", "#ffe680", "#d4bc40", "#0a0800", "#151100", "#2e2500", "#fff9e6", "#c8b870", "rgba(245,197,24,0.15)", "0 4px 20px rgba(100,80,0,0.5)"],
-        dark: ["#c0c0d8", "#9090b0", "#1e1e2a", "#7878f0", "#5555d0", "#0a0a0d", "#14141c", "#1e1e2a", "#e8e8f0", "#8080a0", "rgba(255,255,255,0.07)", "0 4px 24px rgba(0,0,0,0.8)"]
-    };
-    const properties = ["--primary", "--primary-dark", "--secondary", "--accent", "--accent-dark", "--bg-dark", "--bg-card", "--bg-surface", "--text-primary", "--text-secondary", "--border", "--shadow"];
+    const themes = window.__karaokeThemes;
+    delete window.__karaokeThemes;
     const scrollSelectors = [".sidebar-body", ".guest-main", ".queue-section", ".search-section"];
     let snapshotTimer;
     let renewalRequested = false;
@@ -60,12 +51,14 @@
     }
 
     function applyTheme(key) {
-        if (!themes[key]) return;
+        if (!Object.prototype.hasOwnProperty.call(themes, key)) return;
         localStorage.setItem("karaokeTheme", key);
-        themes[key].forEach((value, index) => document.documentElement.style.setProperty(properties[index], value));
-        if (document.body) document.body.style.backgroundColor = themes[key][5];
+        Object.entries(themes[key]).forEach(([property, value]) => document.documentElement?.style.setProperty(property, value));
+        if (document.body) document.body.style.backgroundColor = themes[key]["--bg-dark"];
         scheduleSnapshot();
     }
+
+    applyTheme(seed.theme || localStorage.getItem("karaokeTheme") || "neonPurple");
 
     function apiRequest(url) {
         try {
@@ -184,6 +177,7 @@
     }, { passive: true });
 
     function attach() {
+        applyTheme(localStorage.getItem("karaokeTheme") || "neonPurple");
         document.documentElement.dataset.sskaraokeAndroid = "true";
         const style = document.createElement("style");
         style.textContent = window.__karaokeCss || "";
