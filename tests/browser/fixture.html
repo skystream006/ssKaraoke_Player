@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Karaoke adapter test fixture</title>
+    <style>
+        * { box-sizing: border-box; }
+        body { margin: 0; font-family: sans-serif; }
+        .guest-header, .mobile-tabs, main { padding: 16px; }
+        .mobile-tabs { display: flex; gap: 8px; }
+        .mobile-tab { min-height: 48px; }
+        .active { background: #b9e9d2; }
+        .guest-main { min-height: 400px; }
+        .queue-section { min-height: 280px; }
+        .playlist-item { min-height: 64px; }
+        .playlist-item-row { display: flex; align-items: center; gap: 12px; }
+        .playlist-thumb { width: 64px; height: 48px; object-fit: cover; }
+        .playlist-list { padding: 0; list-style: none; }
+        .mobile-hidden { display: none; }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+    <script>
+        history.replaceState({ idx: 0 }, "", location.href);
+        const root = document.querySelector("#root");
+        root.innerHTML = '<div class="guest-layout"><header class="guest-header">Fixture party <span class="member-badge"></span><div class="theme-picker"><button>Theme</button></div></header><nav class="mobile-tabs"><button class="mobile-tab active">Search</button><button class="mobile-tab">Queue</button><button class="mobile-tab">Status</button></nav><main class="guest-main"><section class="search-section"><input aria-label="Search songs"><p>Search results</p></section><section class="queue-section mobile-hidden"><ul class="playlist-list"><li class="playlist-item"><div class="playlist-item-row"><div class="drag-handle" role="button" tabindex="0">::</div><img class="playlist-thumb" src="/test-icon.png" alt="Song artwork"><span class="playlist-title">City Lights</span></div></li></ul></section></main></div>';
+        document.querySelector(".member-badge").textContent = sessionStorage.getItem("memberName") || "Guest";
+        document.querySelectorAll(".mobile-tab").forEach(button => button.addEventListener("click", () => {
+            document.querySelectorAll(".mobile-tab").forEach(item => item.classList.toggle("active", item === button));
+            document.querySelector(".queue-section").classList.toggle("mobile-hidden", button.textContent !== "Queue");
+            document.querySelector(".search-section").classList.toggle("mobile-hidden", button.textContent !== "Search");
+        }));
+    </script>
+</body>
+</html>

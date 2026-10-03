@@ -1,0 +1,14 @@
+.gradle/
+.kotlin/
+**/build/
+local.properties
+.idea/
+*.iml
+*.jks
+*.keystore
+!app/debug.keystore
+node_modules/
+test-results/
+playwright-report/
+*.apk
+.DS_Store

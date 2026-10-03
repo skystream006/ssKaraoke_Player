@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.SsKaraoke" parent="Theme.Material3.Light.NoActionBar">
+        <item name="colorPrimary">#147D64</item>
+        <item name="colorOnPrimary">#FFFFFF</item>
+        <item name="colorSecondary">#35618B</item>
+        <item name="colorSurface">#F8FAFC</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowActionModeOverlay">true</item>
+        <item name="android:fontFamily">@font/manrope</item>
+        <item name="fontFamily">@font/manrope</item>
+        <item name="android:windowBackground">#F8FAFC</item>
+    </style>
+</resources>

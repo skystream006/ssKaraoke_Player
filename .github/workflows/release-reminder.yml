@@ -1,0 +1,39 @@
+name: PR Release Reminder
+
+on:
+  pull_request_target:
+    types: [closed]
+    branches: [main]
+
+permissions:
+  pull-requests: write
+
+concurrency:
+  group: release-reminder-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  remind:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    steps:
+      - name: Comment with manual release link
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          existing=$(gh api "repos/${GH_REPO}/issues/${PR_NUMBER}/comments" --paginate \
+            --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | startswith("<!-- manual-release-reminder -->"))) | .id')
+          if [ -n "$existing" ]; then
+            echo 'A release reminder already exists.'
+            exit 0
+          fi
+          printf -v body '%s\n' \
+            '<!-- manual-release-reminder -->' \
+            'The next build derives its version automatically from first-parent history.' \
+            '' \
+            "[Open Manual Android Release](${GITHUB_SERVER_URL}/${GH_REPO}/actions/workflows/manual-release.yml) and select **Run workflow** on **main**." \
+            '' \
+            'Releases remain manual and build the latest main, which may include later merges.'
+          gh api --method POST "repos/${GH_REPO}/issues/${PR_NUMBER}/comments" -f body="$body"

@@ -1,0 +1,45 @@
+html[data-sskaraoke-android] {
+    overscroll-behavior-x: none;
+    -webkit-text-size-adjust: 100%;
+}
+html[data-sskaraoke-android] .theme-picker {
+    display: none !important;
+}
+html[data-sskaraoke-android] .drag-handle {
+    min-width: 44px;
+    min-height: 48px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+}
+html[data-sskaraoke-android] .playlist-info {
+    min-width: 0;
+}
+html[data-sskaraoke-android] .playlist-title {
+    overflow-wrap: anywhere;
+}
+html[data-sskaraoke-android] .guest-header,
+html[data-sskaraoke-android] .guest-header-info,
+html[data-sskaraoke-android] .header-right {
+    flex-wrap: wrap;
+}
+html[data-sskaraoke-android] .guest-main,
+html[data-sskaraoke-android] .sidebar-body {
+    overscroll-behavior-x: none;
+}
+@media (max-width: 420px) {
+    html[data-sskaraoke-android] .playlist-thumb {
+        width: 48px;
+        height: 36px;
+        object-fit: cover;
+    }
+    html[data-sskaraoke-android] .playlist-item-row {
+        gap: 4px;
+    }
+    html[data-sskaraoke-android] .playlist-actions {
+        flex-shrink: 0;
+    }
+}

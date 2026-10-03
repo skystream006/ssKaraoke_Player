@@ -1,0 +1,113 @@
+name: Manual Android Release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: manual-android-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: main
+          fetch-depth: 0
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Install Android SDK
+        run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0'
+      - name: Check release signing configuration
+        id: signing
+        env:
+          KEYSTORE_BASE64: ${{ secrets.APK_SIGNING_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.APK_SIGNING_STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.APK_SIGNING_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.APK_SIGNING_KEY_PASSWORD }}
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ] && [ -z "$STORE_PASSWORD" ] && [ -z "$KEY_ALIAS" ] && [ -z "$KEY_PASSWORD" ]; then
+            echo 'enabled=false' >> "$GITHUB_OUTPUT"
+            echo 'Using the repository debug key, shared by local and CI builds.'
+          elif [ -n "$KEYSTORE_BASE64" ] && [ -n "$STORE_PASSWORD" ] && [ -n "$KEY_ALIAS" ] && [ -n "$KEY_PASSWORD" ]; then
+            echo 'enabled=true' >> "$GITHUB_OUTPUT"
+          else
+            echo '::error::Configure all four APK_SIGNING_* secrets together, or leave them all unset.'
+            exit 1
+          fi
+      - name: Restore distribution signing key
+        if: steps.signing.outputs.enabled == 'true'
+        env:
+          KEYSTORE_BASE64: ${{ secrets.APK_SIGNING_KEYSTORE_BASE64 }}
+          APK_SIGNING_STORE_PASSWORD: ${{ secrets.APK_SIGNING_STORE_PASSWORD }}
+          APK_SIGNING_KEY_ALIAS: ${{ secrets.APK_SIGNING_KEY_ALIAS }}
+        run: |
+          umask 077
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "${RUNNER_TEMP}/distribution.jks"
+          keytool -list -keystore "${RUNNER_TEMP}/distribution.jks" \
+            -storepass:env APK_SIGNING_STORE_PASSWORD -alias "$APK_SIGNING_KEY_ALIAS" >/dev/null
+      - name: Validate browser integration
+        run: |
+          npm ci
+          npm test
+          npx playwright install --with-deps chromium
+          npm run test:browser
+      - name: Test, lint, and build release
+        env:
+          SIGNING_ENABLED: ${{ steps.signing.outputs.enabled }}
+          APK_SIGNING_STORE_PASSWORD: ${{ secrets.APK_SIGNING_STORE_PASSWORD }}
+          APK_SIGNING_KEY_ALIAS: ${{ secrets.APK_SIGNING_KEY_ALIAS }}
+          APK_SIGNING_KEY_PASSWORD: ${{ secrets.APK_SIGNING_KEY_PASSWORD }}
+        run: |
+          if [ "$SIGNING_ENABLED" = 'true' ]; then
+            export APK_SIGNING_STORE_FILE="${RUNNER_TEMP}/distribution.jks"
+          fi
+          sh ./gradlew :app:testDebugUnitTest :app:lintRelease :app:assembleRelease --console=plain
+      - name: Verify and name installable APK
+        id: apk
+        run: |
+          version=$(node -p 'require("./app/build/outputs/apk/release/output-metadata.json").elements[0].versionName')
+          apk=$(node -p 'require("./app/build/outputs/apk/release/output-metadata.json").elements[0].outputFile')
+          "${ANDROID_HOME}/build-tools/36.0.0/apksigner" verify --verbose --print-certs "app/build/outputs/apk/release/${apk}"
+          name="ssKaraoke-Player-v${version}.apk"
+          cp "app/build/outputs/apk/release/${apk}" "$name"
+          sha256sum "$name" > "${name}.sha256"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ssKaraoke-Player-v${{ steps.apk.outputs.version }}
+          path: |
+            ${{ steps.apk.outputs.name }}
+            ${{ steps.apk.outputs.name }}.sha256
+          if-no-files-found: error
+      - name: Publish latest GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ steps.apk.outputs.version }}
+          APK_NAME: ${{ steps.apk.outputs.name }}
+        run: |
+          tag="v${VERSION}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo 'This version is already published; leaving it unchanged.'
+            exit 0
+          fi
+          gh release create "$tag" "$APK_NAME" "${APK_NAME}.sha256" \
+            --target "$(git rev-parse HEAD)" --title "ssKaraoke Player ${VERSION}" --generate-notes --latest
+      - name: Remove distribution signing key
+        if: always()
+        run: rm -f "${RUNNER_TEMP}/distribution.jks"
