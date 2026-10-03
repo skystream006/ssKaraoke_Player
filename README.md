@@ -84,7 +84,7 @@ Versions use ssMusic_Player's first-parent Git-history approach. No bot writes v
 
 After pushing this project, use **Actions > Manual Android Release > Run workflow** on **main**. The workflow checks out latest main with full history, runs browser/native tests and release lint, builds and verifies a signed universal APK, and publishes the versioned APK and SHA-256 file as the latest release. Re-running a published version leaves it unchanged. The post-merge reminder links to that workflow without checking out or executing PR code.
 
-[Android checks](.github/workflows/android.yml) also runs on PRs and main pushes and uploads a debug APK artifact. Extract an Actions artifact ZIP before installing its APK; the in-app updater reads Releases, not Actions artifacts.
+The manual release workflow uploads a release APK artifact. Extract an Actions artifact ZIP before installing its APK; the in-app updater reads Releases, not Actions artifacts.
 
 ### Stable Signing Key
 
@@ -105,7 +105,7 @@ Switching signing keys after distribution prevents in-place updates. A version b
 
 ## Verification
 
-Native JVM tests cover URL boundaries, saved-session serialization, password/QR renewal, HTTP errors/redirects, release parsing, download integrity, signing identity, and the native settings/setup layouts at narrow width and 150% text size. Android lint and both APK build variants are included in CI.
+Native JVM tests cover URL boundaries, saved-session serialization, password/QR renewal, HTTP errors/redirects, release parsing, download integrity, signing identity, and the native settings/setup layouts at narrow width and 150% text size. Android release lint and release APK assembly are included in the manual release workflow.
 
 Node 22 LTS is recommended for browser/workflow tests:
 
