@@ -39,7 +39,9 @@ class PreviewActivity : MainActivity() {
 @Config(sdk = [35], qualifiers = "w320dp-h800dp-port-mdpi")
 @GraphicsMode(GraphicsMode.Mode.LEGACY)
 class NativeUiTest {
-    @Test fun firstLaunchHasServerEntryAndAccessibleSettings() {
+    @Test
+    @Config(sdk = [26, 28, 35])
+    fun firstLaunchHasServerEntryAndAccessibleSettings() {
         Robolectric.buildActivity(PreviewActivity::class.java).setup().use { controller ->
             val activity = controller.get()
             val root = activity.window.decorView
@@ -50,7 +52,7 @@ class NativeUiTest {
             assertTrue(connect.height >= 48)
             assertFalse(descendants(root).any { it is MaterialToolbar })
             val settings = settingsButton(activity)
-            assertEquals(0.5f, settings.alpha)
+            assertEquals(0.5f, settings.alpha, 0f)
             assertTrue(settings.isShown)
             assertTrue(settings.width >= 48 && settings.height >= 48)
             assertTrue(settings.left > 240 && settings.top > 700)
@@ -58,7 +60,7 @@ class NativeUiTest {
             ViewCompat.dispatchApplyWindowInsets(chrome, WindowInsetsCompat.Builder()
                 .setInsets(WindowInsetsCompat.Type.systemBars(), Insets.of(0, 24, 0, 32)).build())
             measure(root, 320, 800)
-            assertEquals(800 - 32 - 16 - 48, settings.top)
+            assertEquals(chrome.height - 32 - 16 - 48, settings.top)
         }
     }
 
@@ -128,7 +130,9 @@ class NativeUiTest {
         } finally { RuntimeEnvironment.setFontScale(1f) }
     }
 
-    @Test fun allThemesRecolorNativeViewsWithoutDiscardingFormInput() {
+    @Test
+    @Config(sdk = [26, 28, 35])
+    fun allThemesRecolorNativeViewsWithoutDiscardingFormInput() {
         Robolectric.buildActivity(PreviewActivity::class.java).setup().use { controller ->
             val activity = controller.get()
             val store = ReflectionHelpers.getField<SessionStore>(activity, "store")

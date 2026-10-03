@@ -11,9 +11,11 @@ import android.graphics.Rect
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.InsetDrawable
+import android.graphics.drawable.RippleDrawable
 import android.graphics.drawable.StateListDrawable
 import android.net.Uri
 import android.net.http.SslError
+import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.text.InputType
@@ -21,8 +23,8 @@ import android.view.Gravity
 import android.view.HapticFeedbackConstants
 import android.view.View
 import android.view.ViewGroup
-import android.view.WindowManager
 import android.view.Window
+import android.view.WindowManager
 import android.view.inputmethod.EditorInfo
 import android.webkit.CookieManager
 import android.webkit.PermissionRequest
@@ -823,15 +825,17 @@ open class MainActivity : AppCompatActivity() {
     private fun applyNativeTheme() {
         root.setBackgroundColor(surface)
         webView?.setBackgroundColor(surface)
-        settingsButton.background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(card) }
+        settingsButton.background = RippleDrawable(ColorStateList.valueOf(primary),
+            GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(card) }, null)
         settingsButton.imageTintList = ColorStateList.valueOf(primary)
         tintView(column)
         themeSystemBars(window)
-        settingsDialog?.window?.let {
-            it.setBackgroundDrawableResource(android.R.color.transparent)
-            it.decorView.setBackgroundColor(surface)
-            (it.decorView.findViewById<ViewGroup>(android.R.id.content).getChildAt(0))?.setBackgroundColor(surface)
-            themeDialog(settingsDialog!!)
+        settingsDialog?.let { dialog ->
+            dialog.window?.decorView?.let {
+                it.setBackgroundColor(surface)
+                it.findViewById<ViewGroup>(android.R.id.content)?.getChildAt(0)?.setBackgroundColor(surface)
+            }
+            themeDialog(dialog)
         }
     }
 
@@ -881,7 +885,9 @@ open class MainActivity : AppCompatActivity() {
             }
             is TextInputLayout -> {
                 view.boxBackgroundColor = card
-                view.boxStrokeColor = primary
+                view.setBoxStrokeColorStateList(ColorStateList(
+                    arrayOf(intArrayOf(android.R.attr.state_focused), intArrayOf()), intArrayOf(primary, muted)))
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) view.setCursorColor(ColorStateList.valueOf(primary))
                 view.defaultHintTextColor = ColorStateList.valueOf(muted)
                 view.hintTextColor = ColorStateList.valueOf(primary)
                 view.editText?.setTextColor(ink)
