@@ -6,13 +6,16 @@ import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.content.res.ColorStateList
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.graphics.Color
+import android.graphics.Rect
 import android.graphics.Typeface
-import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.InsetDrawable
+import android.graphics.drawable.RippleDrawable
+import android.graphics.drawable.StateListDrawable
 import android.net.Uri
 import android.net.http.SslError
+import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.text.InputType
@@ -20,6 +23,7 @@ import android.view.Gravity
 import android.view.HapticFeedbackConstants
 import android.view.View
 import android.view.ViewGroup
+import android.view.Window
 import android.view.WindowManager
 import android.view.inputmethod.EditorInfo
 import android.webkit.CookieManager
@@ -34,6 +38,7 @@ import android.webkit.WebStorage
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.FrameLayout
+import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
@@ -44,6 +49,7 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.addCallback
 import androidx.appcompat.app.AppCompatActivity
+import androidx.appcompat.widget.AppCompatImageButton
 import androidx.core.content.FileProvider
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
@@ -72,7 +78,7 @@ open class MainActivity : AppCompatActivity() {
     private lateinit var store: SessionStore
     private lateinit var root: FrameLayout
     private lateinit var column: LinearLayout
-    private lateinit var toolbar: MaterialToolbar
+    private lateinit var settingsButton: AppCompatImageButton
     private lateinit var content: FrameLayout
     private lateinit var pageProgress: LinearProgressIndicator
     private lateinit var fullscreen: FrameLayout
@@ -96,10 +102,15 @@ open class MainActivity : AppCompatActivity() {
     private var downloading = false
     private var checking = false
     private var refreshUpdateViews: (() -> Unit)? = null
-    private val primary = Color.rgb(20, 125, 100)
-    private val ink = Color.rgb(31, 39, 48)
-    private val muted = Color.rgb(92, 103, 116)
-    private val surface = Color.rgb(248, 250, 252)
+    private val themeJson by lazy { assets.open("color-themes.json").bufferedReader().use { it.readText() } }
+    private val palettes by lazy { JSONObject(themeJson) }
+    private fun themeColor(property: String, key: String = store.current.theme): Int =
+        Color.parseColor((palettes.optJSONObject(key) ?: palettes.getJSONObject("neonPurple")).getString(property))
+    private val primary get() = themeColor("--primary")
+    private val ink get() = themeColor("--text-primary")
+    private val muted get() = themeColor("--text-secondary")
+    private val surface get() = themeColor("--bg-dark")
+    private val card get() = themeColor("--bg-card")
     private val sessionScript by lazy { assets.open("mobile-session.js").bufferedReader().use { it.readText() } }
     private val shellScript by lazy { assets.open("mobile-shell.js").bufferedReader().use { it.readText() } }
     private val shellCss by lazy { assets.open("mobile-shell.css").bufferedReader().use { it.readText() } }
@@ -125,36 +136,29 @@ open class MainActivity : AppCompatActivity() {
     private fun buildChrome() {
         root = FrameLayout(this).apply { setBackgroundColor(surface) }
         column = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        toolbar = MaterialToolbar(this).apply {
-            title = "ssKaraoke"
-            setTitleTextColor(ink)
-            setSubtitleTextColor(muted)
-            val bitmap = BitmapFactory.decodeResource(resources, R.drawable.app_icon)
-            logo = BitmapDrawable(resources, Bitmap.createScaledBitmap(bitmap, dp(32), dp(32), true))
-            menu.add(0, 1, 0, "Refresh").apply {
-                setIcon(android.R.drawable.ic_popup_sync)
-                setShowAsAction(android.view.MenuItem.SHOW_AS_ACTION_ALWAYS)
-            }
-            menu.add(0, 2, 1, "App settings").apply {
-                setIcon(android.R.drawable.ic_menu_manage)
-                setShowAsAction(android.view.MenuItem.SHOW_AS_ACTION_ALWAYS)
-            }
-            setOnMenuItemClickListener { item ->
-                if (item.itemId == 2) showSettings() else refreshPage()
-                true
-            }
-            setNavigationOnClickListener { onBackPressedDispatcher.onBackPressed() }
-        }
-        column.addView(toolbar, LinearLayout.LayoutParams(-1, dp(64)))
         pageProgress = LinearProgressIndicator(this).apply { isIndeterminate = true; isVisible = false }
         column.addView(pageProgress, LinearLayout.LayoutParams(-1, dp(3)))
         content = FrameLayout(this)
         column.addView(content, LinearLayout.LayoutParams(-1, 0, 1f))
-        root.addView(column, FrameLayout.LayoutParams(-1, -1))
+        val chrome = FrameLayout(this)
+        chrome.addView(column, FrameLayout.LayoutParams(-1, -1))
+        settingsButton = AppCompatImageButton(this).apply {
+            setImageResource(android.R.drawable.ic_menu_manage)
+            contentDescription = "App settings"
+            tooltipText = contentDescription
+            alpha = 0.5f
+            setPadding(dp(12), dp(12), dp(12), dp(12))
+            setOnClickListener { showSettings() }
+        }
+        chrome.addView(settingsButton, FrameLayout.LayoutParams(dp(48), dp(48), Gravity.BOTTOM or Gravity.END).apply {
+            setMargins(dp(16), dp(16), dp(16), dp(16))
+        })
+        root.addView(chrome, FrameLayout.LayoutParams(-1, -1))
         fullscreen = FrameLayout(this).apply { setBackgroundColor(Color.BLACK); isVisible = false }
         root.addView(fullscreen, FrameLayout.LayoutParams(-1, -1))
         setContentView(root)
-        applyInsets(column)
+        applyInsets(chrome)
+        applyNativeTheme()
     }
 
     private fun applyInsets(view: View) {
@@ -168,9 +172,6 @@ open class MainActivity : AppCompatActivity() {
     private fun showServerSetup(prefill: String = "") {
         disposeWebView()
         pageProgress.isVisible = false
-        toolbar.subtitle = null
-        toolbar.navigationIcon = null
-        toolbar.menu.findItem(1).isVisible = false
         val form = formPage()
         val image = ImageView(this).apply {
             setImageResource(R.drawable.app_icon)
@@ -179,7 +180,7 @@ open class MainActivity : AppCompatActivity() {
         }
         form.addView(image, LinearLayout.LayoutParams(dp(96), dp(96)).apply { gravity = Gravity.CENTER_HORIZONTAL; bottomMargin = dp(24) })
         form.addView(text("ssKaraoke Player", 26f, true))
-        form.addView(text("Connect to your server", 17f).apply { setTextColor(muted) }, rowParams(8, 24))
+        form.addView(text("Connect to your server", 17f, secondary = true), rowParams(8, 24))
         val (field, input) = inputField("Server URL", prefill, InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI)
         input.imeOptions = EditorInfo.IME_ACTION_GO
         form.addView(field, rowParams())
@@ -194,7 +195,7 @@ open class MainActivity : AppCompatActivity() {
         input.setOnEditorActionListener { _, action, _ ->
             if (action == EditorInfo.IME_ACTION_GO) { connectButton.performClick(); true } else false
         }
-        form.addView(text("v${BuildConfig.VERSION_NAME}", 13f).apply { setTextColor(muted); gravity = Gravity.CENTER }, rowParams(24))
+        form.addView(text("v${BuildConfig.VERSION_NAME}", 13f, secondary = true).apply { gravity = Gravity.CENTER }, rowParams(24))
     }
 
     private fun confirmServer(address: ServerAddress) {
@@ -202,10 +203,10 @@ open class MainActivity : AppCompatActivity() {
             store.update(SavedSession(origin = address.origin, route = address.initialRoute, theme = store.current.theme))
             connect()
         }
-        if (address.encrypted) proceed() else MaterialAlertDialogBuilder(this)
+        if (address.encrypted) proceed() else alertBuilder()
             .setTitle("Use unencrypted HTTP?")
             .setMessage("Passwords and party traffic can be read on this network. Continue only on a trusted network. HTTPS is recommended.")
-            .setNegativeButton("Cancel", null).setPositiveButton("Connect") { _, _ -> proceed() }.show()
+            .setNegativeButton("Cancel", null).setPositiveButton("Connect") { _, _ -> proceed() }.show().also { themeDialog(it) }
     }
 
     private fun connect(forceRenew: Boolean = false) {
@@ -213,9 +214,9 @@ open class MainActivity : AppCompatActivity() {
         connectionJob?.cancel()
         if (webView == null) {
             val form = formPage()
-            form.addView(ProgressBar(this), LinearLayout.LayoutParams(dp(40), dp(40)).apply { gravity = Gravity.CENTER_HORIZONTAL })
+            form.addView(ProgressBar(this).apply { indeterminateTintList = ColorStateList.valueOf(primary) },
+                LinearLayout.LayoutParams(dp(40), dp(40)).apply { gravity = Gravity.CENTER_HORIZONTAL })
             form.addView(text("Connecting", 20f, true).apply { gravity = Gravity.CENTER }, rowParams(20))
-            toolbar.subtitle = Uri.parse(store.current.origin).authority
         }
         pageProgress.isVisible = true
         connectionJob = lifecycleScope.launch {
@@ -233,7 +234,7 @@ open class MainActivity : AppCompatActivity() {
             } catch (failure: Exception) {
                 if (webView == null) showError(failure.message ?: "Cannot reach the server.") { connect(forceRenew) }
                 else {
-                    toast("Connection interrupted. Your sign-in is saved; use Refresh to reconnect.")
+                    toast("Connection interrupted. Your sign-in is saved; use App settings > Refresh to reconnect.")
                     webView?.evaluateJavascript("window.KaraokeAndroid?.retryAuthentication()", null)
                 }
             } finally { pageProgress.isVisible = false }
@@ -325,6 +326,7 @@ open class MainActivity : AppCompatActivity() {
                 fullscreen.addView(view, FrameLayout.LayoutParams(-1, -1))
                 fullscreen.isVisible = true
                 column.isVisible = false
+                settingsButton.isVisible = false
                 WindowInsetsControllerCompat(window, root).apply {
                     systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
                     hide(WindowInsetsCompat.Type.systemBars())
@@ -338,17 +340,13 @@ open class MainActivity : AppCompatActivity() {
             browser.resumeTimers()
             browser.onResume()
         }
-        toolbar.navigationIcon = androidx.appcompat.content.res.AppCompatResources.getDrawable(this, androidx.appcompat.R.drawable.abc_ic_ab_back_material)
-        toolbar.navigationContentDescription = "Back"
-        toolbar.menu.findItem(1).isVisible = true
-        toolbar.subtitle = Uri.parse(server.origin).authority
         browser.loadUrl(server.origin + server.safeRoute(store.current.route))
         updateKeepAwake()
     }
 
     private fun installDocumentScript(browser: WebView) {
         documentScript?.remove()
-        val script = "if(window===window.top){window.__karaokeSeed=${store.current.seed()};window.__karaokeCss=${JSONObject.quote(shellCss)};\n$sessionScript\n$shellScript\n}"
+        val script = "if(window===window.top){window.__karaokeSeed=${store.current.seed()};window.__karaokeThemes=$themeJson;window.__karaokeCss=${JSONObject.quote(shellCss)};\n$sessionScript\n$shellScript\n}"
         documentScript = WebViewCompat.addDocumentStartJavaScript(browser, script, setOf(store.current.origin))
     }
 
@@ -356,7 +354,7 @@ open class MainActivity : AppCompatActivity() {
         when (message.optString("type")) {
             "snapshot" -> {
                 val snapshot = message.optJSONObject("state") ?: return
-                store.update(store.current.withSnapshot(snapshot))
+                store.update(store.current.withSnapshot(snapshot).copy(theme = store.current.theme))
                 updateKeepAwake()
             }
             "credentials" -> {
@@ -372,6 +370,7 @@ open class MainActivity : AppCompatActivity() {
                 if (isForeground) connect(true) else renewOnResume = true
             }
             "logout" -> clearSession(store.current.signedOut())
+            "ready" -> webView?.evaluateJavascript("window.KaraokeAndroid?.applyTheme(${JSONObject.quote(store.current.theme)})", null)
             "haptic" -> webView?.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
         }
     }
@@ -396,7 +395,6 @@ open class MainActivity : AppCompatActivity() {
         form.addView(text("Connection unavailable", 22f, true))
         form.addView(text(message, 16f), rowParams(16, 12))
         form.addView(button("Try again", action = retry), rowParams(8))
-        form.addView(button("App settings", outlined = true) { showSettings() }, rowParams(8))
     }
 
     private fun showSettings() {
@@ -444,37 +442,45 @@ open class MainActivity : AppCompatActivity() {
         }
         refreshUpdateViews?.invoke()
         body.addView(section("Color theme"))
-        val choices = RadioGroup(this).apply { orientation = RadioGroup.VERTICAL }
-        val swatches = listOf("#b44fff", "#00c9c8", "#52b788", "#ff6b35", "#f5c518", "#888899")
-        SavedSession.themes.entries.forEachIndexed { index, entry ->
+        val choices = RadioGroup(this).apply { orientation = RadioGroup.HORIZONTAL }
+        SavedSession.themes.forEach { (key, name) ->
             choices.addView(RadioButton(this).apply {
                 id = View.generateViewId()
-                tag = entry.key
-                text = entry.value
-                textSize = 16f
+                tag = key
+                contentDescription = name
+                buttonDrawable = null
+                setPadding(0, 0, 0, 0)
+                minWidth = dp(48)
                 minHeight = dp(48)
-                isChecked = store.current.theme == entry.key
-                val swatch = GradientDrawable().apply {
-                    shape = GradientDrawable.OVAL
-                    setColor(Color.parseColor(swatches[index]))
-                    setSize(dp(20), dp(20))
-                    setBounds(0, 0, dp(20), dp(20))
-                }
-                compoundDrawablePadding = dp(12)
-                setCompoundDrawablesRelative(null, null, swatch, null)
-            }, RadioGroup.LayoutParams(-1, -2))
+                isChecked = store.current.theme == key
+                tintView(this)
+            }, RadioGroup.LayoutParams(dp(48), dp(48)))
         }
         choices.setOnCheckedChangeListener { group, checked ->
             val key = group.findViewById<RadioButton>(checked)?.tag as? String ?: return@setOnCheckedChangeListener
             store.update(store.current.copy(theme = key))
-            webView?.evaluateJavascript("window.KaraokeAndroid?.applyTheme(${JSONObject.quote(key)})", null)
+            applyNativeTheme()
+            webView?.let {
+                installDocumentScript(it)
+                it.evaluateJavascript("window.KaraokeAndroid?.applyTheme(${JSONObject.quote(key)})", null)
+            }
         }
-        body.addView(choices, rowParams())
+        val themeScroll = HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            addView(choices)
+        }
+        body.addView(themeScroll, rowParams())
+        choices.post {
+            choices.findViewById<RadioButton>(choices.checkedRadioButtonId)?.let {
+                it.requestRectangleOnScreen(Rect(0, 0, it.width, it.height))
+            }
+        }
         body.addView(section("Server and sign-in"))
         body.addView(text(store.current.origin.ifEmpty { "No server selected" }, 15f).apply { setTextIsSelectable(true) }, rowParams(4))
         val identity = store.current.username.ifEmpty { store.current.memberName }.ifEmpty { "Not signed in" }
         body.addView(text(identity, 15f), rowParams(8, 12))
         if (store.current.origin.isNotEmpty()) {
+            body.addView(button("Refresh", true) { dialog.dismiss(); refreshPage() }, rowParams(8))
             if (store.current.token.isNotEmpty() && store.current.level in setOf("member", "admin")) {
                 body.addView(button("Switch user", true) {
                     dialog.dismiss()
@@ -499,7 +505,7 @@ open class MainActivity : AppCompatActivity() {
                 }
             }, rowParams(8))
         }
-        body.addView(text("ssKaraoke Player v${BuildConfig.VERSION_NAME}", 13f).apply { setTextColor(muted) }, rowParams(28))
+        body.addView(text("ssKaraoke Player v${BuildConfig.VERSION_NAME}", 13f, secondary = true), rowParams(28))
         dialog.setContentView(layout)
         dialog.setOnDismissListener { refreshUpdateViews = null; settingsDialog = null }
         dialog.show()
@@ -508,6 +514,7 @@ open class MainActivity : AppCompatActivity() {
             it.setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
         }
         applyInsets(layout)
+        applyNativeTheme()
     }
 
     private fun checkForUpdates(silent: Boolean) {
@@ -612,7 +619,7 @@ open class MainActivity : AppCompatActivity() {
         if (store.current.origin.isEmpty()) { showServerSetup(prefill); return }
         val (field, input) = inputField("Join code or link", prefill)
         val wrapper = LinearLayout(this).apply { setPadding(dp(24), dp(8), dp(24), 0); addView(field, rowParams()) }
-        val dialog = MaterialAlertDialogBuilder(this).setTitle("Join a party").setView(wrapper)
+        val dialog = alertBuilder().setTitle("Join a party").setView(wrapper)
             .setNegativeButton("Cancel", null).setPositiveButton("Open", null).create()
         dialog.setOnShowListener {
             dialog.getButton(Dialog.BUTTON_POSITIVE).setOnClickListener {
@@ -624,6 +631,7 @@ open class MainActivity : AppCompatActivity() {
             }
         }
         dialog.show()
+        themeDialog(dialog)
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -676,6 +684,7 @@ open class MainActivity : AppCompatActivity() {
         fullscreen.removeAllViews()
         fullscreen.isVisible = false
         column.isVisible = true
+        settingsButton.isVisible = true
         customViewCallback?.onCustomViewHidden()
         customViewCallback = null
         WindowInsetsControllerCompat(window, root).show(WindowInsetsCompat.Type.systemBars())
@@ -756,7 +765,7 @@ open class MainActivity : AppCompatActivity() {
         val center = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
-            setPadding(dp(24), dp(32), dp(24), dp(32))
+            setPadding(dp(24), dp(32), dp(24), dp(80))
         }
         val form = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         center.addView(form, LinearLayout.LayoutParams((resources.displayMetrics.widthPixels - dp(48)).coerceAtMost(dp(480)), -2))
@@ -765,10 +774,11 @@ open class MainActivity : AppCompatActivity() {
         return form
     }
 
-    private fun text(value: String, size: Float = 16f, bold: Boolean = false) = TextView(this).apply {
+    private fun text(value: String, size: Float = 16f, bold: Boolean = false, secondary: Boolean = false) = TextView(this).apply {
         text = value
         textSize = size
-        setTextColor(ink)
+        tag = if (secondary) "muted" else null
+        setTextColor(if (secondary) muted else ink)
         if (bold) setTypeface(typeface, Typeface.BOLD)
         setLineSpacing(dp(2).toFloat(), 1f)
     }
@@ -785,7 +795,8 @@ open class MainActivity : AppCompatActivity() {
         cornerRadius = dp(8)
         insetTop = dp(2)
         insetBottom = dp(2)
-        if (!outlined) { backgroundTintList = ColorStateList.valueOf(primary); setTextColor(Color.WHITE) }
+        tag = if (outlined) "outlined" else null
+        tintView(this)
         setOnClickListener { action() }
     }
 
@@ -793,12 +804,105 @@ open class MainActivity : AppCompatActivity() {
         val field = TextInputLayout(this).apply { boxBackgroundMode = TextInputLayout.BOX_BACKGROUND_OUTLINE; this.hint = hint }
         val input = TextInputEditText(field.context).apply { inputType = type; setSingleLine(true); setText(initial); textSize = 17f }
         field.addView(input, LinearLayout.LayoutParams(-1, -2))
+        tintView(field)
         return field to input
     }
 
     private fun confirm(title: String, message: String, positive: String, action: () -> Unit) {
-        MaterialAlertDialogBuilder(this).setTitle(title).setMessage(message).setNegativeButton("Cancel", null)
-            .setPositiveButton(positive) { _, _ -> action() }.show()
+        alertBuilder().setTitle(title).setMessage(message).setNegativeButton("Cancel", null)
+            .setPositiveButton(positive) { _, _ -> action() }.show().also { themeDialog(it) }
+    }
+
+    private fun alertBuilder() = MaterialAlertDialogBuilder(this).setBackground(GradientDrawable().apply {
+        setColor(card)
+        cornerRadius = dp(24).toFloat()
+    })
+
+    private fun themeDialog(dialog: Dialog) {
+        dialog.window?.let { tintView(it.decorView); themeSystemBars(it) }
+    }
+
+    private fun applyNativeTheme() {
+        root.setBackgroundColor(surface)
+        webView?.setBackgroundColor(surface)
+        settingsButton.background = RippleDrawable(ColorStateList.valueOf(primary),
+            GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(card) }, null)
+        settingsButton.imageTintList = ColorStateList.valueOf(primary)
+        tintView(column)
+        themeSystemBars(window)
+        settingsDialog?.let { dialog ->
+            dialog.window?.decorView?.let {
+                it.setBackgroundColor(surface)
+                it.findViewById<ViewGroup>(android.R.id.content)?.getChildAt(0)?.setBackgroundColor(surface)
+            }
+            themeDialog(dialog)
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun themeSystemBars(target: Window) {
+        target.statusBarColor = surface
+        target.navigationBarColor = surface
+        WindowInsetsControllerCompat(target, target.decorView).apply {
+            isAppearanceLightStatusBars = false
+            isAppearanceLightNavigationBars = false
+        }
+    }
+
+    private fun tintView(view: View) {
+        when (view) {
+            is WebView -> return
+            is MaterialToolbar -> {
+                view.setBackgroundColor(card)
+                view.setTitleTextColor(ink)
+                view.setSubtitleTextColor(muted)
+                view.navigationIcon?.setTint(ink)
+                return
+            }
+            is MaterialButton -> {
+                val outlined = view.tag == "outlined"
+                val disabled = -android.R.attr.state_enabled
+                view.backgroundTintList = ColorStateList(
+                    arrayOf(intArrayOf(disabled), intArrayOf()), intArrayOf(card, if (outlined) Color.TRANSPARENT else primary))
+                view.setTextColor(ColorStateList(
+                    arrayOf(intArrayOf(disabled), intArrayOf()), intArrayOf(muted, if (outlined) primary else surface)))
+                view.strokeColor = ColorStateList.valueOf(primary)
+                view.rippleColor = ColorStateList.valueOf(themeColor("--bg-surface"))
+            }
+            is RadioButton -> {
+                val color = themeColor("--primary", view.tag as String)
+                fun swatch(selected: Boolean) = InsetDrawable(GradientDrawable().apply {
+                    shape = GradientDrawable.OVAL
+                    setColor(color)
+                    setStroke(dp(3), if (selected) ink else Color.TRANSPARENT)
+                }, dp(6))
+                view.backgroundTintList = null
+                view.background = StateListDrawable().apply {
+                    addState(intArrayOf(android.R.attr.state_checked), swatch(true))
+                    addState(intArrayOf(android.R.attr.state_focused), swatch(true))
+                    addState(intArrayOf(), swatch(false))
+                }
+            }
+            is TextInputLayout -> {
+                view.boxBackgroundColor = card
+                view.setBoxStrokeColorStateList(ColorStateList(
+                    arrayOf(intArrayOf(android.R.attr.state_focused), intArrayOf()), intArrayOf(primary, muted)))
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) view.setCursorColor(ColorStateList.valueOf(primary))
+                view.defaultHintTextColor = ColorStateList.valueOf(muted)
+                view.hintTextColor = ColorStateList.valueOf(primary)
+                view.editText?.setTextColor(ink)
+                view.editText?.setHintTextColor(muted)
+                return
+            }
+            is LinearProgressIndicator -> {
+                view.setIndicatorColor(primary)
+                view.trackColor = card
+            }
+            is ProgressBar -> view.indeterminateTintList = ColorStateList.valueOf(primary)
+            is android.widget.Button -> view.setTextColor(primary)
+            is TextView -> view.setTextColor(if (view.tag == "muted") muted else ink)
+        }
+        if (view is ViewGroup) for (index in 0 until view.childCount) tintView(view.getChildAt(index))
     }
 
     private fun rowParams(top: Int = 0, bottom: Int = 0) = LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(top); bottomMargin = dp(bottom) }

@@ -23,7 +23,7 @@ The hosted server UI retains party creation/joining, returning members, QR links
 - Swipe horizontally in the guest content area to move between Search, Queue, and Status. Swipe within the organizer sidebar to move between Playlist, Search, and its audio settings.
 - Long-press a song's enlarged drag handle, then drag and drop to reorder. This uses the server client's existing `@hello-pangea/dnd` touch sensor and reorder endpoint, with native haptic feedback. Queue locks and disabled drag permissions are respected.
 - Sliders, inputs, buttons, video, and active song drags do not trigger tab swipes. Existing play/remove controls remain available.
-- Android Back and the native back arrow navigate back; full-screen video exits before the page does. The organizer screen stays awake while visible.
+- Android Back navigates back; full-screen video exits before the page does. The organizer screen stays awake while visible.
 - Share a party link to ssKaraoke Player from Android, or use **App settings > Open party link** to enter a code/link for the selected server.
 
 YouTube playback stays in the original IFrame player. Key/tempo/vocal behavior has the same limitations as the server frontend; this app does not add pitch shifting, audio source separation, offline media, or a background playback service. Leaving the foreground pauses local video. Reopening loads the live party state, not a stale saved queue or a forced historical playback position. Unsubmitted forms/search text are not checkpointed.
@@ -40,12 +40,12 @@ On startup, the native client checks the token at `GET /api/parties`. A 401 rene
 
 ## App Settings and Updates
 
-The native **App settings** gear is always available, including before login. It is separate from server administration.
+The native **App settings** gear floats at the bottom right at 50% opacity, including before login, and hides during full-screen video. There is no native top toolbar. App settings is separate from server administration.
 
 - **Check for updates** is a filled, full-width Material button. The app also checks once when launched in the foreground.
 - **Download and install** asks before downloading, shows progress, and supports cancellation. Leaving the foreground cancels an unfinished transfer; it is not retried automatically.
-- **Color theme** contains the server's six labeled color swatches: Neon Purple, Ocean, Forest, Sunset, Midnight Gold, and Dark. Theme selection is remembered on the device and applied without reloading the party. The web header's duplicate theme picker is hidden only inside the Android app.
-- **Server and sign-in** includes the current address, identity, join-link entry, browser access, server switching, sign-out, and server administration for admin sessions.
+- **Color theme** shows the server's six colors in a horizontal, scrollable swatch row with a selection ring and screen-reader labels, without visible names. Selection is remembered on the device and immediately updates both native screens and the party without reloading it. Native and web colors share the bundled `color-themes.json` palette. The web header's duplicate theme picker is hidden only inside the Android app.
+- **Server and sign-in** includes the current address, identity, **Refresh**, join-link entry, browser access, server switching, sign-out, and server administration for admin sessions.
 
 **App settings > Server and sign-in > Switch user** opens the server's username selector with its existing name suggestions, without asking for the password again. Your login, access level, and saved password are retained. The previous party-member identity is cleared and you return to the home screen to join as the selected user; existing members and queued songs are not renamed or deleted. Both an unfinished username selection and the newly chosen name survive reopening the app.
 
