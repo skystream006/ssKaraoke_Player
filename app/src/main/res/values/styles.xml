@@ -1,16 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.SsKaraoke" parent="Theme.Material3.Dark.NoActionBar">
+    <style name="Theme.SsKaraoke.Base" parent="Theme.Material3.Dark.NoActionBar">
         <item name="colorPrimary">#B44FFF</item>
         <item name="colorOnPrimary">#0E0820</item>
         <item name="colorSecondary">#FF6EC7</item>
         <item name="colorSurface">#180F35</item>
         <item name="colorOnSurface">#F0E6FF</item>
         <item name="android:windowLightStatusBar">false</item>
-        <item name="android:windowLightNavigationBar">false</item>
         <item name="android:windowActionModeOverlay">true</item>
         <item name="android:fontFamily">@font/manrope</item>
         <item name="fontFamily">@font/manrope</item>
         <item name="android:windowBackground">#0E0820</item>
     </style>
+    <style name="Theme.SsKaraoke" parent="Theme.SsKaraoke.Base" />
 </resources>
