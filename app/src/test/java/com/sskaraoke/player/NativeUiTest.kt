@@ -46,7 +46,7 @@ class NativeUiTest {
         val context = RuntimeEnvironment.getApplication()
         context.setTheme(R.style.Theme_SsKaraoke)
         val attributes = context.obtainStyledAttributes(intArrayOf(
-            com.google.android.material.R.attr.colorPrimary,
+            androidx.appcompat.R.attr.colorPrimary,
             android.R.attr.windowBackground,
             android.R.attr.fontFamily,
             android.R.attr.windowLightStatusBar
