@@ -1,10 +1,12 @@
 package com.sskaraoke.player
 
+import android.content.Context
 import android.os.Looper
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
 import android.view.Window
+import android.view.accessibility.AccessibilityManager
 import android.widget.Button
 import androidx.appcompat.widget.AppCompatImageButton
 import org.junit.Assert.*
@@ -93,6 +95,18 @@ class PointerNavigationTest {
         }
     }
 
+    @Test fun anUncapturedDirectionalRepeatStartsMovementAfterAndroidLeavesTouchMode() {
+        withPointer { window, pointer ->
+            key(window, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_RIGHT, 1)
+            val start = motion(pointer).x
+            frame(pointer)
+            assertTrue(ReflectionHelpers.getField(pointer, "visible"))
+            assertTrue(motion(pointer).x > start)
+            key(window, KeyEvent.ACTION_UP, KeyEvent.KEYCODE_DPAD_RIGHT)
+            assertFalse(ReflectionHelpers.getField(pointer, "framePending"))
+        }
+    }
+
     @Test fun selectProducesOneTouchGestureAndCanDragWithoutMovingFocus() {
         withPointer { window, pointer ->
             val events = mutableListOf<Int>()
@@ -145,6 +159,18 @@ class PointerNavigationTest {
 
     @Test fun menuReturnsKeysToNormalFocusNavigationAndInstallationIsIdempotent() {
         withPointer { window, pointer ->
+            val receivedKeys = mutableListOf<Int>()
+            val button = Button(window.context).apply {
+                isFocusableInTouchMode = true
+                setOnKeyListener { _, code, _ -> receivedKeys.add(code); true }
+            }
+            window.setContentView(button)
+            measure(window.decorView, 800, 600)
+            button.requestFocus()
+            key(window, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_ENTER)
+            key(window, KeyEvent.ACTION_UP, KeyEvent.KEYCODE_ENTER)
+            assertEquals(listOf(KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_ENTER), receivedKeys)
+            receivedKeys.clear()
             PointerNavigation.install(window)
             assertSame(pointer, window.callback)
             key(window, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_MENU)
@@ -153,9 +179,29 @@ class PointerNavigationTest {
             assertFalse(ReflectionHelpers.getField(pointer, "visible"))
             assertFalse(ReflectionHelpers.getField(pointer, "framePending"))
             key(window, KeyEvent.ACTION_UP, KeyEvent.KEYCODE_DPAD_RIGHT)
+            assertEquals(listOf(KeyEvent.KEYCODE_DPAD_RIGHT, KeyEvent.KEYCODE_DPAD_RIGHT), receivedKeys)
             key(window, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_MENU)
             key(window, KeyEvent.ACTION_UP, KeyEvent.KEYCODE_MENU)
             assertTrue(ReflectionHelpers.getField(pointer, "visible"))
+        }
+    }
+
+    @Test fun touchExplorationKeepsDirectionalKeysAndMenuAndCancelsAnActivePointer() {
+        withPointer { window, pointer ->
+            val accessibility = window.context.getSystemService(Context.ACCESSIBILITY_SERVICE) as AccessibilityManager
+            key(window, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_RIGHT)
+            shadowOf(accessibility).setTouchExplorationEnabled(true)
+            try {
+                frame(pointer)
+                assertFalse(ReflectionHelpers.getField(pointer, "visible"))
+                assertFalse(ReflectionHelpers.getField(pointer, "framePending"))
+                key(window, KeyEvent.ACTION_UP, KeyEvent.KEYCODE_DPAD_RIGHT)
+                key(window, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_MENU)
+                key(window, KeyEvent.ACTION_UP, KeyEvent.KEYCODE_MENU)
+                assertTrue(ReflectionHelpers.getField(pointer, "enabled"))
+                key(window, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_LEFT)
+                assertFalse(ReflectionHelpers.getField(pointer, "visible"))
+            } finally { shadowOf(accessibility).setTouchExplorationEnabled(false) }
         }
     }
 

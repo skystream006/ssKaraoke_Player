@@ -100,10 +100,15 @@ internal class PointerNavigation private constructor(window: Window, private val
             capturedKeys.remove(event.keyCode)
             if (!captured) return callback.dispatchKeyEvent(event)
         }
-        if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount > 0) {
+        if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount > 0 &&
+            (captured || event.keyCode !in directionKeys)) {
             return captured || callback.dispatchKeyEvent(event)
         }
-        if (event.keyCode == KeyEvent.KEYCODE_MENU && event.hasNoModifiers()) {
+        if (!event.hasNoModifiers() || inputNeedsKeys()) {
+            reset()
+            return captured || callback.dispatchKeyEvent(event)
+        }
+        if (event.keyCode == KeyEvent.KEYCODE_MENU) {
             if (event.action == KeyEvent.ACTION_DOWN) capturedKeys.add(event.keyCode)
             if (event.action == KeyEvent.ACTION_UP && !event.isCanceled) {
                 enabled = !enabled
@@ -112,7 +117,7 @@ internal class PointerNavigation private constructor(window: Window, private val
             }
             return true
         }
-        if (!enabled || !event.hasNoModifiers() || inputNeedsKeys()) {
+        if (!enabled) {
             reset()
             return captured || callback.dispatchKeyEvent(event)
         }
@@ -136,12 +141,14 @@ internal class PointerNavigation private constructor(window: Window, private val
             return true
         }
         if (visible && event.keyCode in selectKeys) {
-            if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0 && pressKey == null) {
+            if (event.action == KeyEvent.ACTION_DOWN) {
                 if (event.isCanceled) return true
                 capturedKeys.add(event.keyCode)
-                pressKey = event.keyCode
-                pressTime = SystemClock.uptimeMillis()
-                sendTouch(MotionEvent.ACTION_DOWN)
+                if (pressKey == null) {
+                    pressKey = event.keyCode
+                    pressTime = SystemClock.uptimeMillis()
+                    sendTouch(MotionEvent.ACTION_DOWN)
+                }
             } else if (event.action == KeyEvent.ACTION_UP && pressKey == event.keyCode) {
                 pressKey = null
                 sendTouch(if (event.isCanceled) MotionEvent.ACTION_CANCEL else MotionEvent.ACTION_UP)
