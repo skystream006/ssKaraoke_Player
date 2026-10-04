@@ -120,6 +120,7 @@ open class MainActivity : AppCompatActivity() {
         WindowCompat.setDecorFitsSystemWindows(window, false)
         store = SessionStore(this)
         buildChrome()
+        PointerNavigation.install(window)
         onBackPressedDispatcher.addCallback(this) {
             when {
                 fullscreen.isVisible -> hideFullscreen()
@@ -751,6 +752,12 @@ open class MainActivity : AppCompatActivity() {
         super.onStop()
     }
 
+    override fun onPause() {
+        (window.callback as? PointerNavigation)?.reset()
+        settingsDialog?.window?.let { (it.callback as? PointerNavigation)?.reset() }
+        super.onPause()
+    }
+
     override fun onDestroy() {
         settingsDialog?.dismiss()
         disposeWebView()
@@ -820,7 +827,11 @@ open class MainActivity : AppCompatActivity() {
     })
 
     private fun themeDialog(dialog: Dialog) {
-        dialog.window?.let { tintView(it.decorView); themeSystemBars(it) }
+        dialog.window?.let {
+            tintView(it.decorView)
+            themeSystemBars(it)
+            PointerNavigation.install(it)
+        }
     }
 
     private fun applyNativeTheme() {

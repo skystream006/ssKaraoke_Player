@@ -24,6 +24,7 @@ The hosted server UI retains party creation/joining, returning members, QR links
 - Long-press a song's enlarged drag handle, then drag and drop to reorder. This uses the server client's existing `@hello-pangea/dnd` touch sensor and reorder endpoint, with native haptic feedback. Queue locks and disabled drag permissions are respected.
 - Sliders, inputs, buttons, video, and active song drags do not trigger tab swipes. Existing play/remove controls remain available.
 - Android Back navigates back; full-screen video exits before the page does. The organizer screen stays awake while visible.
+- With a remote or keyboard, use the directional keys to reveal and move the pointer; hold a direction for smooth, accelerating movement. **OK/Enter** clicks, and holding it while moving drags sliders, scrolls content, or long-presses song handles. The pointer works on the party, native screens, dialogs, and full-screen video. **Menu** toggles between pointer and ordinary focus/keyboard navigation for the current window. Touch/mouse input hides it; the on-screen keyboard and screen-reader touch exploration retain their normal controls.
 - Share a party link to ssKaraoke Player from Android, or use **App settings > Open party link** to enter a code/link for the selected server.
 
 YouTube playback stays in the original IFrame player. Key/tempo/vocal behavior has the same limitations as the server frontend; this app does not add pitch shifting, audio source separation, offline media, or a background playback service. Leaving the foreground pauses local video. Reopening loads the live party state, not a stale saved queue or a forced historical playback position. Unsubmitted forms/search text are not checkpointed.
@@ -105,7 +106,7 @@ Switching signing keys after distribution prevents in-place updates. A version b
 
 ## Verification
 
-Native JVM tests cover URL boundaries, saved-session serialization, password/QR renewal, HTTP errors/redirects, release parsing, download integrity, signing identity, and the native settings/setup layouts at narrow width and 150% text size. Android release lint and release APK assembly are included in the manual release workflow.
+Native JVM tests cover URL boundaries, saved-session serialization, password/QR renewal, HTTP errors/redirects, release parsing, download integrity, signing identity, frame-rate-independent pointer movement and input handling, and the native settings/setup layouts at narrow width and 150% text size. Android release lint and release APK assembly are included in the manual release workflow.
 
 Node 22 LTS is recommended for browser/workflow tests:
 
