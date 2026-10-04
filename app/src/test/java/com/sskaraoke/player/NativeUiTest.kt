@@ -125,12 +125,16 @@ class NativeUiTest {
             val activity = controller.get()
             val store = ReflectionHelpers.getField<SessionStore>(activity, "store")
             val saved = SavedSession(origin = "https://karaoke.example", token = "valid", level = "admin", password = "secret",
-                username = "Alex", memberId = "member-1", memberName = "Alex", memberRole = "organizer", route = "/organizer/party-1/member-1")
+                username = "Alex", memberId = "member-1", memberName = "Stage Alex", memberRole = "organizer", route = "/organizer/party-1/member-1")
             store.update(saved)
             settingsButton(activity).performClick()
             val dialog = ShadowDialog.getLatestDialog()
             val root = dialog.window!!.decorView
             measure(root, 320, 800)
+            val labels = descendants(root).filterIsInstance<TextView>().map { it.text.toString() }.toList()
+            assertTrue(labels.contains(saved.origin))
+            assertTrue(labels.contains(saved.username))
+            assertFalse(labels.contains(saved.memberName))
             val switch = descendants(root).filterIsInstance<MaterialButton>().single { it.text == "Switch user" }
             assertTrue(switch.isEnabled)
             assertTextFits(switch)

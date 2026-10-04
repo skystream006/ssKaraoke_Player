@@ -40,7 +40,7 @@ On startup, the native client checks the token at `GET /api/parties`. A 401 rene
 
 ## App Settings and Updates
 
-The native **App settings** gear floats at the bottom right at 50% opacity, including before login, and hides during full-screen video. There is no native top toolbar. App settings is separate from server administration.
+The native **App settings** gear floats at the bottom right at 50% opacity, including before login, and hides during full-screen video. There is no native top toolbar, and the hosted frontend's user top bar is hidden inside the Android app. Its username and **Switch user** action are available under **App settings > Server and sign-in**. Party headers and their controls remain visible. App settings is separate from server administration.
 
 - **Check for updates** is a filled, full-width Material button. The app also checks once when launched in the foreground.
 - **Download and install** asks before downloading, shows progress, and supports cancellation. Leaving the foreground cancels an unfinished transfer; it is not retried automatically.
