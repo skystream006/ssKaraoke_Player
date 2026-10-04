@@ -99,6 +99,27 @@ test("restores login, member identity, theme, and the selected tab before contin
     await page.screenshot({ path: testInfo.outputPath("restored-guest.png"), fullPage: true });
 });
 
+test("removes the user top bar without hiding the party header or reserving its space", async ({ page }) => {
+    const toolbar = page.locator(".user-toolbar");
+    await expect(toolbar).toHaveCount(1);
+    await expect(toolbar.locator(".user-toolbar__name")).toHaveText("Alex");
+    await expect(toolbar).toBeHidden();
+    await expect(page.getByRole("button", { name: "Switch user", exact: true })).toHaveCount(0);
+    await expect(page.locator(".guest-header")).toBeVisible();
+    await expect(page.locator(".member-badge")).toBeVisible();
+    await expect(page.locator(".mobile-tab.active")).toContainText("Queue");
+    expect((await page.locator(".guest-layout").boundingBox()).y).toBe(0);
+
+    await page.reload();
+    await expect(toolbar).toBeHidden();
+    await expect(page.locator(".guest-header")).toBeVisible();
+
+    await page.evaluate(() => delete document.documentElement.dataset.sskaraokeAndroid);
+    await expect(toolbar).toBeVisible();
+    await expect(page.getByRole("button", { name: "Switch user", exact: true })).toBeVisible();
+    expect((await page.locator(".guest-layout").boundingBox()).y).toBeGreaterThan(0);
+});
+
 test("saves only successful fetch and XMLHttpRequest passwords", async ({ page }) => {
     await page.evaluate(async () => {
         await fetch("/api/auth", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ password: "wrong" }) });

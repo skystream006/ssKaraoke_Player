@@ -40,12 +40,12 @@ On startup, the native client checks the token at `GET /api/parties`. A 401 rene
 
 ## App Settings and Updates
 
-The native **App settings** gear floats at the bottom right at 50% opacity, including before login, and hides during full-screen video. There is no native top toolbar. App settings is separate from server administration.
+The native **App settings** gear floats at the bottom right at 50% opacity, including before login, and hides during full-screen video. There is no native top toolbar, and the hosted frontend's user top bar is hidden inside the Android app. Its username and **Switch user** action are available under **App settings > Server and sign-in**. Party headers and their controls remain visible. App settings is separate from server administration.
 
 - **Check for updates** is a filled, full-width Material button. The app also checks once when launched in the foreground.
 - **Download and install** asks before downloading, shows progress, and supports cancellation. Leaving the foreground cancels an unfinished transfer; it is not retried automatically.
 - **Color theme** shows the server's six colors in a horizontal, scrollable swatch row with a selection ring and screen-reader labels, without visible names. Selection is remembered on the device and immediately updates both native screens and the party without reloading it. Native and web colors share the bundled `color-themes.json` palette. The web header's duplicate theme picker is hidden only inside the Android app.
-- **Server and sign-in** includes the current address, identity, **Refresh**, join-link entry, browser access, server switching, sign-out, and server administration for admin sessions.
+- **Server and sign-in** includes the current address, identity, **Home**, **Refresh**, join-link entry, browser access, server switching, sign-out, and server administration for admin sessions. **Home** closes settings and returns to the selected server's home page without signing out or switching users.
 
 **App settings > Server and sign-in > Switch user** opens the server's username selector with its existing name suggestions, without asking for the password again. Your login, access level, and saved password are retained. The previous party-member identity is cleared and you return to the home screen to join as the selected user; existing members and queued songs are not renamed or deleted. Both an unfinished username selection and the newly chosen name survive reopening the app.
 

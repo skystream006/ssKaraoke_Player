@@ -480,6 +480,7 @@ open class MainActivity : AppCompatActivity() {
         val identity = store.current.username.ifEmpty { store.current.memberName }.ifEmpty { "Not signed in" }
         body.addView(text(identity, 15f), rowParams(8, 12))
         if (store.current.origin.isNotEmpty()) {
+            body.addView(button("Home", true) { dialog.dismiss(); navigate("/") }, rowParams(8))
             body.addView(button("Refresh", true) { dialog.dismiss(); refreshPage() }, rowParams(8))
             if (store.current.token.isNotEmpty() && store.current.level in setOf("member", "admin")) {
                 body.addView(button("Switch user", true) {

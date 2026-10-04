@@ -19,6 +19,8 @@ import androidx.core.view.WindowInsetsCompat
 import com.google.android.material.appbar.MaterialToolbar
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.textfield.TextInputEditText
+import okhttp3.mockwebserver.MockResponse
+import okhttp3.mockwebserver.MockWebServer
 import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -103,6 +105,7 @@ class NativeUiTest {
             assertTrue(update.isEnabled)
             assertTrue(update.width > 200)
             assertTrue(update.height >= 48)
+            assertFalse(descendants(root).filterIsInstance<MaterialButton>().any { it.text == "Home" })
             assertFalse(descendants(root).filterIsInstance<MaterialButton>().any { it.text == "Switch user" })
             val themes = descendants(root).filterIsInstance<RadioButton>().toList()
             assertEquals(SavedSession.themes.values.toList(), themes.map { it.contentDescription.toString() })
@@ -120,17 +123,49 @@ class NativeUiTest {
         }
     }
 
+    @Test fun homeButtonClosesSettingsAndPreservesTheCurrentUser() {
+        for (role in listOf("guest", "organizer")) {
+            MockWebServer().use { server ->
+                server.enqueue(MockResponse().setBody("[]"))
+                Robolectric.buildActivity(PreviewActivity::class.java).setup().use { controller ->
+                    val activity = controller.get()
+                    val store = ReflectionHelpers.getField<SessionStore>(activity, "store")
+                    val saved = SavedSession(origin = ServerAddress.parse(server.url("/").toString()).origin,
+                        token = "valid", level = if (role == "organizer") "admin" else "member", password = "secret",
+                        username = "Alex", memberId = "member-1", memberName = "Stage Alex", memberRole = role,
+                        route = "/$role/party-1/member-1", theme = "forest", view = "{\"tab\":\"search\"}")
+                    store.update(saved)
+                    settingsButton(activity).performClick()
+                    val dialog = ShadowDialog.getLatestDialog()
+                    val root = dialog.window!!.decorView
+                    measure(root, 320, 800)
+                    val home = descendants(root).filterIsInstance<MaterialButton>().single { it.text == "Home" }
+                    assertTrue(home.isEnabled)
+                    assertTrue(home.width > 200 && home.height >= 48)
+                    assertTextFits(home)
+                    home.performClick()
+                    assertFalse(dialog.isShowing)
+                    assertEquals(saved.copy(route = "/", view = "{}"), store.current)
+                }
+            }
+        }
+    }
+
     @Test fun switchUserButtonPreservesLoginAndStartsUsernameSelection() {
         Robolectric.buildActivity(PreviewActivity::class.java).setup().use { controller ->
             val activity = controller.get()
             val store = ReflectionHelpers.getField<SessionStore>(activity, "store")
             val saved = SavedSession(origin = "https://karaoke.example", token = "valid", level = "admin", password = "secret",
-                username = "Alex", memberId = "member-1", memberName = "Alex", memberRole = "organizer", route = "/organizer/party-1/member-1")
+                username = "Alex", memberId = "member-1", memberName = "Stage Alex", memberRole = "organizer", route = "/organizer/party-1/member-1")
             store.update(saved)
             settingsButton(activity).performClick()
             val dialog = ShadowDialog.getLatestDialog()
             val root = dialog.window!!.decorView
             measure(root, 320, 800)
+            val labels = descendants(root).filterIsInstance<TextView>().map { it.text.toString() }.toList()
+            assertTrue(labels.contains(saved.origin))
+            assertTrue(labels.contains(saved.username))
+            assertFalse(labels.contains(saved.memberName))
             val switch = descendants(root).filterIsInstance<MaterialButton>().single { it.text == "Switch user" }
             assertTrue(switch.isEnabled)
             assertTextFits(switch)

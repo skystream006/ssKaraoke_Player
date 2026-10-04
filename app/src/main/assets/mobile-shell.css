@@ -2,7 +2,8 @@ html[data-sskaraoke-android] {
     overscroll-behavior-x: none;
     -webkit-text-size-adjust: 100%;
 }
-html[data-sskaraoke-android] .theme-picker {
+html[data-sskaraoke-android] .theme-picker,
+html[data-sskaraoke-android] .user-toolbar {
     display: none !important;
 }
 html[data-sskaraoke-android] .drag-handle {

@@ -7,6 +7,8 @@
     <style>
         * { box-sizing: border-box; }
         body { margin: 0; font-family: sans-serif; }
+        .user-toolbar { display: flex; align-items: center; justify-content: flex-end; gap: .75rem; padding: .5rem 1rem; }
+        .user-toolbar__name { color: var(--text-secondary); font-size: .9rem; }
         .guest-header, .mobile-tabs, main { padding: 16px; }
         .mobile-tabs { display: flex; gap: 8px; }
         .mobile-tab { min-height: 48px; }
@@ -41,6 +43,14 @@
             return;
         }
         root.innerHTML = '<div class="guest-layout"><header class="guest-header">Fixture party <span class="member-badge"></span><div class="theme-picker"><button>Theme</button></div></header><nav class="mobile-tabs"><button class="mobile-tab active">Search</button><button class="mobile-tab">Queue</button><button class="mobile-tab">Status</button></nav><main class="guest-main"><section class="search-section"><input aria-label="Search songs"><p>Search results</p></section><section class="queue-section mobile-hidden"><ul class="playlist-list"><li class="playlist-item"><div class="playlist-item-row"><div class="drag-handle" role="button" tabindex="0">::</div><img class="playlist-thumb" src="/test-icon.png" alt="Song artwork"><span class="playlist-title">City Lights</span></div></li></ul></section></main></div>';
+        if (sessionStorage.getItem("authToken")) {
+            const toolbar = document.createElement("div");
+            toolbar.className = "user-toolbar";
+            toolbar.setAttribute("aria-label", "Current user");
+            toolbar.innerHTML = '<span class="user-toolbar__name"></span><button class="btn btn-ghost">Switch user</button>';
+            toolbar.querySelector(".user-toolbar__name").textContent = localStorage.getItem("defaultUsername") || "";
+            root.prepend(toolbar);
+        }
         document.querySelector(".member-badge").textContent = sessionStorage.getItem("memberName") || "Guest";
         document.querySelectorAll(".mobile-tab").forEach(button => button.addEventListener("click", () => {
             document.querySelectorAll(".mobile-tab").forEach(item => item.classList.toggle("active", item === button));
