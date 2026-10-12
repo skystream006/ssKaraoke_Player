@@ -12,6 +12,7 @@
     let authenticationUnavailable = false;
     let restoring = true;
     let lastSnapshot = "";
+    let browserAuthScreen = "";
 
     function send(type, payload = {}) {
         window.KaraokeHost.postMessage(JSON.stringify({ type, ...payload }));
@@ -48,6 +49,18 @@
     function scheduleSnapshot() {
         clearTimeout(snapshotTimer);
         snapshotTimer = setTimeout(snapshot, 250);
+    }
+
+    function routeBrowserAuthentication() {
+        if (authenticationUnavailable) return;
+        const screen = location.pathname.replace(/\/$/, "") === "/account" ? "account"
+            : !sessionStorage.getItem("authToken") &&
+                document.querySelector(".passkey-panel[aria-labelledby='passkey-title']") ? "signin" : "";
+        if (screen && screen !== browserAuthScreen) {
+            snapshot();
+            send(screen);
+        }
+        browserAuthScreen = screen;
     }
 
     function applyTheme(key) {
@@ -133,11 +146,12 @@
             const previousPath = location.pathname;
             const result = original.apply(this, arguments);
             if (location.pathname !== previousPath) restoring = false;
+            routeBrowserAuthentication();
             scheduleSnapshot();
             return result;
         };
     }
-    window.addEventListener("popstate", scheduleSnapshot);
+    window.addEventListener("popstate", () => { routeBrowserAuthentication(); scheduleSnapshot(); });
     window.addEventListener("pagehide", snapshot);
     document.addEventListener("visibilitychange", snapshot);
     document.addEventListener("scroll", scheduleSnapshot, { passive: true, capture: true });
@@ -178,6 +192,7 @@
         let wasDragging = false;
         let restoreQueued = false;
         const restoreView = () => {
+            routeBrowserAuthentication();
             const dragging = !!document.querySelector(".playlist-item.dragging");
             if (dragging && !wasDragging) send("haptic");
             wasDragging = dragging;

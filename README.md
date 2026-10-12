@@ -2,12 +2,12 @@
 
 An Android client for [ss_karaoke_party](https://github.com/skystream006/ss_karaoke_party), starting at **v0.01.00**. Supports Android 8.0 (API 26) and later; targets Android 16 (API 36).
 
-This is a **hybrid Android app**: the selected server's actual karaoke frontend runs in an origin-restricted WebView. Native Kotlin screens provide server setup, encrypted persistence, app settings, and APK updates. Keeping the server frontend preserves its current features and server permissions without maintaining a divergent copy or inventing replacement endpoints. Authentication follows the server's [passkey update](https://github.com/skystream006/ss_karaoke_party/commit/13d7f33fd11c6225134ed1cd8bf39b452059ab97); WebView passkeys also require the website association described below.
+This is a **hybrid Android app**: the selected server's actual karaoke frontend runs in an origin-restricted WebView. Native Kotlin screens provide server setup, encrypted persistence, app settings, and APK updates. Passkey authentication and account management run in a **browser Custom Tab**, using the website's HTTPS WebAuthn origin rather than an Android APK origin. The server must support the browser-to-app handoff described below; the original [passkey update](https://github.com/skystream006/ss_karaoke_party/commit/13d7f33fd11c6225134ed1cd8bf39b452059ab97) alone is insufficient.
 
 ## Connect
 
 1. Install the APK and enter the karaoke **web frontend's configured HTTPS hostname**, for example `https://karaoke.example.com`. A bare hostname defaults to HTTPS. You can also enter a full host invitation link (`/join/invite#invite=…`).
-2. Sign in with a passkey, or create an account with a passkey using the hosted login screen. The server controls account approval. A current host invitation instead grants a restricted guest session, not member/admin access.
+2. Select **Sign in with passkey**. Sign in or create an account in the browser, then use **Return to app** if automatic navigation is blocked. The server controls account approval. Closing the browser does not sign you in; **Cancel sign-in** discards the pending request. A current host invitation instead grants a restricted guest session inside the app, not member/admin access.
 3. Create or join a party. Reopening restores the selected server, login, username, party/member, tab, and scroll position.
 
 The frontend must expose `/api` on the **same origin**. Its existing Socket.IO URL must also be reachable from the phone. Use the real phone-reachable hostname/IP, not the computer's `localhost`. Subdirectory deployments and separate reverse-proxy login walls are not supported. The app does not bundle or replace the frontend or backend.
@@ -16,26 +16,23 @@ HTTP requires explicit confirmation because session tokens and traffic are unenc
 
 Keep Android System WebView/Chrome updated. The app requires WebView's origin-scoped messaging and document-start scripting; older providers show an update requirement instead of insecurely injecting saved credentials after page load.
 
-### Passkey setup
+### Browser passkey setup and server prerequisite
 
-**Server compatibility prerequisite:** the referenced `13d7f33` server commit is not sufficient for Android WebView passkey verification. App-scoped WebAuthn signs an `android:apk-key-hash:…` origin, while that server verifies only the website origin. The server must explicitly trust the installed APK's signing-certificate origin for registration, login, and additional-passkey verification, alongside its configured website origin/RP ID. Its current `PASSKEY_ORIGIN`/secondary settings accept only web origins, so this needs a server code change, not just another environment variable. Keep challenge, RP ID, signature, and user-verification checks intact and allowlist only trusted distribution certificates. **Digital Asset Links alone will not fix this mismatch.** This repository adds the Android integration and session persistence; end-to-end passkey sign-in remains blocked until the server supports Android origins.
+**This repository implements the Android side, not the karaoke server.** `ss_karaoke_party` must add the following handoff before browser sign-in can complete. Deploying only this APK against the original passkey server will not enable sign-in. This is the same authorization-code/S256 PKCE approach as ssMusic_Player, with a karaoke-specific callback and session response; ssMusic accounts and tokens are not interchangeable with karaoke accounts.
 
-Passkeys use WebView's **app-scoped Web Authentication** support and Android Credential Manager, not a custom JavaScript credential bridge. Use Android 9 or later, an updated WebView, and a passkey-capable credential provider (such as Google Password Manager). Unsupported devices can still use host invitation sessions. Cancelling a passkey prompt or awaiting account approval does not create a saved login.
+| Endpoint | Required contract |
+| --- | --- |
+| `GET /app-login` | On the selected HTTPS origin, accept `redirect_uri`, `code_challenge`, `code_challenge_method=S256`, and `state`. Perform fresh browser WebAuthn sign-in (or registration/approval) using the configured website origin and RP ID. |
+| Browser return | Redirect only to the fixed `com.sskaraoke.player:/oauth/callback?code=…&state=…`. The code is 32 random bytes encoded as 43 unpadded base64url characters. Echo the original state. Provide a user-clickable **Return to app** fallback. Never put a session token in the redirect. |
+| `POST /api/auth/app/token` | Accept JSON `{ "code": "…", "code_verifier": "…", "redirect_uri": "com.sskaraoke.player:/oauth/callback" }`. Atomically consume a short-lived, single-use code after checking its S256 verifier and fixed redirect URI. Return the normal flat karaoke account session `{ token, level, user: { name, … }, expiresAt, … }`, with `level` equal to `member` or `admin`, a nonempty name, and future ISO-8601 expiry. |
 
-The server must use its configured WebAuthn HTTPS origin/RP hostname. Associate that website with the installed APK by serving `https://YOUR_HOST/.well-known/assetlinks.json` as public JSON without redirects:
+The server must bind each code to the authenticated approved account, redirect URI, and PKCE challenge; recheck approval at exchange; rate-limit requests; disable caching of auth responses; and never log credentials. Pending/revoked accounts must not receive app sessions. Preserve all challenge, signature, origin, RP ID, and user-verification checks. Existing `/api/auth/me`, `/api/auth/logout`, session lifetimes, invitation revocation, and permissions remain authoritative. The native token exchange must not require browser cookies or a browser `Origin` header: its proof is the bound one-time code and verifier, not a spoofed website origin.
 
-```json
-[{
-  "relation": ["delegate_permission/common.handle_all_urls", "delegate_permission/common.get_login_creds"],
-  "target": {
-    "namespace": "android_app",
-    "package_name": "com.sskaraoke.player",
-    "sha256_cert_fingerprints": ["YOUR_APK_SIGNING_CERTIFICATE_SHA256"]
-  }
-}]
-```
+The app generates independent 32-byte random state and verifier values. Pending sign-in is encrypted in private no-backup storage, survives process recreation, and expires after ten minutes. It validates the exact callback scheme, authority, raw path, parameters, state, age, and saved server, then durably consumes the pending request before exchanging the code. Duplicate returns, cancellation, server changes, and sign-out cannot reuse it. Network failures or interruption during exchange require a fresh sign-in; an exchange is never automatically retried.
 
-Replace the fingerprint with the SHA-256 certificate fingerprint from `keytool -list -v -keystore YOUR_KEYSTORE -alias YOUR_ALIAS`, matching the installed build. Use a private distribution signing key for real accounts: the repository's public debug key is not a secure identity to authorize for credential sharing. Changing the hostname/RP ID or signing key may require new passkeys/association configuration. See [Android's WebView authentication setup](https://developer.android.com/identity/sign-in/credential-manager-webview). No browser-privileged mode, TLS bypass, or automatic external-browser token transfer is used.
+**No Android passkey origin or Digital Asset Links configuration is needed for this custom-scheme flow.** Existing website passkeys remain usable with the same RP ID and a compatible browser/provider. Both browser and app must trust the configured hostname's HTTPS certificate. Ordinary HTTP and raw IP addresses cannot start browser passkey sign-in; invitations remain available. No WebView browser-privileged mode, credential JavaScript bridge, TLS bypass, or browser-cookie copying is used.
+
+Another installed app can claim a custom URI scheme. PKCE prevents redeeming an intercepted code without the verifier, but does not authenticate the installed app's identity or prevent interruption. Approve only sign-ins you initiate. Account/passkey management opens the website's `/account` page in the browser without transferring the app token, and may need a separate browser login.
 
 ## Karaoke and Gestures
 
@@ -52,13 +49,13 @@ YouTube playback stays in the original IFrame player. Key/tempo/vocal behavior h
 
 ## Saved Sign-In
 
-The server issues a 24-hour bearer session after successful passkey registration/login verification (`/api/auth/register/verify` or `/api/auth/login/verify`). Invitation acceptance at `/api/parties/:id/join` issues a guest token, bounded by the host session/invitation lifetime. Its web client keeps authentication in `sessionStorage` and the account's default name in `localStorage`.
+The server's browser handoff issues an account session after successful WebAuthn verification and authorization-code exchange. The existing karaoke account-session lifetime is 24 hours. Invitation acceptance at `/api/parties/:id/join` issues a guest token, bounded by the host session/invitation lifetime. Its web client keeps authentication in `sessionStorage` and the account's default name in `localStorage`.
 
-The Android adapter saves the session when the hosted client stores its token/access level, including before page/tab restoration finishes. The token, username, and location are encrypted with AES-256-GCM using an Android Keystore key, written atomically in private no-backup storage, and excluded from cloud/device-transfer backups. The token is restored into only the selected origin's web session before React initializes. Passkey private keys stay with the credential provider; the app never captures passwords or passkey material. Old saved passwords and username-selection flags are discarded when loading an earlier app's session.
+The native client saves the exchanged account session; the Android adapter also saves hosted guest/session updates before page/tab restoration finishes. The token, username, location, and pending PKCE request are encrypted with AES-256-GCM using an Android Keystore key, written atomically in private no-backup storage, and excluded from cloud/device-transfer backups. Only the session and UI state are restored into the selected origin's WebView before React initializes; the verifier and state never enter the JavaScript seed. Passkey private keys stay with the browser's credential provider; the app never captures passwords or passkey material. Old saved passwords and username-selection flags are discarded when loading an earlier app's session.
 
 On startup/refresh, the native client checks the token at `GET /api/auth/me`, which supports both account and guest sessions. The hosted client also uses `/auth/me` to restore the authoritative account/party scope. A 401 or the hosted client's session-expiry event removes the invalid login; use your passkey or a new invitation to sign in again. The app does not silently renew expired sessions or call the removed password/QR-session endpoints. Offline/5xx verification failures preserve the native login and offer retry. Failed mutations are never automatically replayed.
 
-**Sign out**, **Switch user**, and **Change server** first revoke the token with `POST /api/auth/logout`, then remove the saved login/location and clear this app's WebView storage/cookies. Revoking a host session invalidates its invitations/guest access. A network/server failure preserves the saved session and asks you to retry; an already-expired token can be cleared. Uninstalling removes local state but does not itself revoke a server session or delete provider-managed passkeys. The application does not persist Android location/GPS data.
+**Sign out**, **Switch user**, and **Change server** cancel pending browser sign-in, revoke the token with `POST /api/auth/logout`, then remove the saved login/location and clear this app's WebView storage/cookies. The independent browser login is not cleared. Revoking a host session invalidates its invitations/guest access. A network/server failure preserves the saved session and asks you to retry; an already-expired token can be cleared. Uninstalling removes local state but does not itself revoke a server session or delete provider-managed passkeys. The application does not persist Android location/GPS data.
 
 ## App Settings and Updates
 
@@ -67,7 +64,7 @@ The native **App settings** gear floats at the bottom right at 50% opacity, incl
 - **Check for updates** is a filled, full-width Material button. The app also checks once when launched in the foreground.
 - **Download and install** asks before downloading, shows progress, and supports cancellation. Leaving the foreground cancels an unfinished transfer; it is not retried automatically.
 - **Color theme** shows the server's six colors in a horizontal, scrollable swatch row with a selection ring and screen-reader labels, without visible names. Selection is remembered on the device and immediately updates both native screens and the party without reloading it. Native and web colors share the bundled `color-themes.json` palette. The web header's duplicate theme picker is hidden only inside the Android app.
-- **Server and sign-in** includes the current address, identity, **Home**, **Refresh**, invitation-link entry, browser access, server switching, sign-out, and server administration for admin sessions. Account sessions also have **Account and passkeys**, opening the hosted `/account` page for passkey management and account controls. **Home** closes settings without signing out; guest sessions remain restricted to their party by the server frontend.
+- **Server and sign-in** includes the current address, identity, **Home**, **Refresh**, invitation-link entry, browser access, server switching, sign-out, and server administration for admin sessions. Account sessions also have **Account and passkeys**, opening `/account` in a browser Custom Tab for passkey management and account controls. **Home** closes settings without signing out; guest sessions remain restricted to their party by the server frontend.
 
 **App settings > Server and sign-in > Switch user** confirms sign-out and revokes the current session before returning to login. Sign in with the other account's passkey or open a current host invitation. It no longer changes an alias while retaining another account's credentials; existing party members and queued songs are not renamed or deleted.
 
@@ -127,7 +124,7 @@ Switching signing keys after distribution prevents in-place updates. A version b
 
 ## Verification
 
-Native JVM tests cover URL/invitation boundaries, saved-session serialization and legacy migration, account/guest session validation, revocable logout, HTTP errors/redirects, release parsing, download integrity, signing identity, frame-rate-independent pointer movement and input handling, and the native settings/setup layouts at narrow width and 150% text size. Android release lint and release APK assembly are included in the manual release workflow.
+Native JVM tests cover PKCE and callback validation, pending-login serialization without JavaScript exposure, code-exchange failures, URL/invitation boundaries, saved-session migration, account/guest session validation, revocable logout, HTTP errors/redirects, release parsing, download integrity, signing identity, frame-rate-independent pointer movement and input handling, and native settings/setup layouts at narrow width and 150% text size. Android release lint and release APK assembly are included in the manual release workflow.
 
 Node 22 LTS is recommended for browser/workflow tests:
 
@@ -154,7 +151,7 @@ The device-only Keystore persistence test is compiled into the instrumentation A
 .\gradlew.bat :app:connectedDebugAndroidTest
 ```
 
-Before distributing, verify passkey registration/login/cancellation and additional passkey management against the configured HTTPS hostname/Digital Asset Links on a real device, plus host invitation login, process death/reopen, expiry/revocation, private-CA networking, YouTube playback/fullscreen/seek, background/resume, queue changes shared with another device, and install-over-existing-app. Check invitation access on Android 8 and passkeys on supported Android versions. Live passkey/provider prompts, server playback, hardware Keystore behavior, Android's installer, and publishing require device/repository checks; mocked browser tests cannot establish them.
+Before distributing, deploy the server handoff and verify browser registration/login/cancellation, approval, return-to-app, duplicate/invalid callbacks, and browser passkey management on a real device. Also test process death while the browser is open, interruption during token exchange, host invitations, expiry/revocation, private-CA networking, YouTube playback/fullscreen/seek, background/resume, shared queue changes, and install-over-existing-app. Check invitation access on Android 8 and passkeys on browser/provider-supported Android versions. Live WebAuthn prompts, the server handoff, hardware Keystore behavior, playback, Android's installer, and publishing require device/repository checks; mocked tests cannot establish them.
 
 ## Assets
 

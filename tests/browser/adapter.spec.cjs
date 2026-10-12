@@ -216,6 +216,53 @@ test.describe("account route", () => {
         expect(await page.evaluate(() => sessionStorage.getItem("authToken"))).toBe(seed.token);
         expect(await page.evaluate(() => localStorage.getItem("defaultUsername"))).toBe("Alex");
     });
+
+    test("requests native browser account management without transferring credentials", async ({ page }) => {
+        expect(await page.evaluate(() => window.nativeEvents.filter(event => event.type === "account"))).toEqual([{ type: "account" }]);
+        await page.evaluate(() => document.body.appendChild(document.createElement("span")));
+        expect(await page.evaluate(() => window.nativeEvents.filter(event => event.type === "account"))).toHaveLength(1);
+    });
+});
+
+test("SPA account navigation requests browser management", async ({ page }) => {
+    await page.evaluate(() => history.pushState({}, "", "/account"));
+    expect(await page.evaluate(() => window.nativeEvents.filter(event => event.type === "account"))).toEqual([{ type: "account" }]);
+});
+
+test.describe("hosted sign-in routing", () => {
+    test.use({ savedSession: signedOut });
+
+    test("routes passkey screens to native browser sign-in but leaves guest invitations in the WebView", async ({ page }) => {
+        await page.evaluate(() => {
+            const panel = document.querySelector(".passkey-panel");
+            panel.setAttribute("aria-labelledby", "invitation-title");
+            panel.appendChild(document.createElement("span"));
+        });
+        await page.evaluate(() => new Promise(resolve => requestAnimationFrame(resolve)));
+        expect(await page.evaluate(() => window.nativeEvents.filter(event => event.type === "signin"))).toEqual([]);
+        await page.evaluate(() => {
+            const panel = document.querySelector(".passkey-panel");
+            panel.setAttribute("aria-labelledby", "passkey-title");
+            panel.appendChild(document.createElement("span"));
+        });
+        await expect.poll(() => page.evaluate(() => window.nativeEvents.filter(event => event.type === "signin"))).toEqual([{ type: "signin" }]);
+        expect((await checkpoint(page)).token).toBe("");
+    });
+
+    test("checkpoints leaving an invitation before native sign-in disposes the WebView", async ({ page }) => {
+        const snapshots = await page.evaluate(invitation => {
+            const panel = document.querySelector(".passkey-panel");
+            panel.setAttribute("aria-labelledby", "invitation-title");
+            history.replaceState({}, "", `/join/invite#invite=${invitation}`);
+            window.KaraokeAndroid.snapshot();
+            panel.setAttribute("aria-labelledby", "passkey-title");
+            history.pushState({}, "", "/");
+            const handoff = window.nativeEvents.findIndex(event => event.type === "signin");
+            return window.nativeEvents.slice(0, handoff).filter(event => event.type === "snapshot").map(event => event.state);
+        }, invitation);
+        expect(snapshots.some(state => state.route === `/join/invite#invite=${invitation}`)).toBe(true);
+        expect(snapshots.at(-1).route).toBe("/");
+    });
 });
 
 test.describe("fixture AuthContext contract", () => {
