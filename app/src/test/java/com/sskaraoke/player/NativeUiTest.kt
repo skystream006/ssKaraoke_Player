@@ -129,7 +129,7 @@ class NativeUiTest {
         for (fontScale in listOf(1f, 1.5f)) {
             RuntimeEnvironment.setFontScale(fontScale)
             try {
-                for (level in listOf("", "member", "admin")) {
+                for (level in listOf("", "guest", "member", "admin")) {
                     Robolectric.buildActivity(PreviewActivity::class.java).setup().use { controller ->
                         val activity = controller.get()
                         val store = ReflectionHelpers.getField<SessionStore>(activity, "store")
@@ -141,6 +141,7 @@ class NativeUiTest {
                         val grid = descendants(root).filterIsInstance<GridLayout>().single()
                         val buttons = (0 until grid.childCount).map { grid.getChildAt(it) as MaterialButton }
                         val expected = mutableListOf("Home", "Refresh")
+                        if (level in listOf("member", "admin")) expected.add("Account and passkeys")
                         if (level.isNotEmpty()) expected.add("Switch user")
                         expected.add("Open party link")
                         if (level == "admin") expected.add("Server administration")
@@ -182,12 +183,12 @@ class NativeUiTest {
     @Test fun homeButtonClosesSettingsAndPreservesTheCurrentUser() {
         for (role in listOf("guest", "organizer")) {
             MockWebServer().use { server ->
-                server.enqueue(MockResponse().setBody("[]"))
+                server.enqueue(MockResponse().setBody("""{"level":"member","user":{"name":"Alex"}}"""))
                 Robolectric.buildActivity(PreviewActivity::class.java).setup().use { controller ->
                     val activity = controller.get()
                     val store = ReflectionHelpers.getField<SessionStore>(activity, "store")
                     val saved = SavedSession(origin = ServerAddress.parse(server.url("/").toString()).origin,
-                        token = "valid", level = if (role == "organizer") "admin" else "member", password = "secret",
+                        token = "valid", level = if (role == "organizer") "admin" else "member",
                         username = "Alex", memberId = "member-1", memberName = "Stage Alex", memberRole = role,
                         route = "/$role/party-1/member-1", theme = "forest", view = "{\"tab\":\"search\"}")
                     store.update(saved)
@@ -207,11 +208,11 @@ class NativeUiTest {
         }
     }
 
-    @Test fun switchUserButtonPreservesLoginAndStartsUsernameSelection() {
+    @Test fun switchUserRequiresConfirmationBeforeRevokingAccountSession() {
         Robolectric.buildActivity(PreviewActivity::class.java).setup().use { controller ->
             val activity = controller.get()
             val store = ReflectionHelpers.getField<SessionStore>(activity, "store")
-            val saved = SavedSession(origin = "https://karaoke.example", token = "valid", level = "admin", password = "secret",
+            val saved = SavedSession(origin = "https://karaoke.example", token = "valid", level = "admin",
                 username = "Alex", memberId = "member-1", memberName = "Stage Alex", memberRole = "organizer", route = "/organizer/party-1/member-1")
             store.update(saved)
             settingsButton(activity).performClick()
@@ -226,8 +227,13 @@ class NativeUiTest {
             assertTrue(switch.isEnabled)
             assertTextFits(switch)
             switch.performClick()
-            assertFalse(dialog.isShowing)
-            assertEquals(saved.switchUser(), store.current)
+            val confirmation = ShadowDialog.getLatestDialog()
+            assertNotSame(dialog, confirmation)
+            assertTrue(descendants(confirmation.window!!.decorView).filterIsInstance<TextView>()
+                .any { it.text.contains("revoke this session") })
+            confirmation.cancel()
+            assertEquals(saved, store.current)
+            dialog.dismiss()
         }
     }
 

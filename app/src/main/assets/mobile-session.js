@@ -10,8 +10,9 @@
             const address = new URL(value, origin);
             if (address.origin !== new URL(origin).origin || address.username || address.password) return "/";
             const path = address.pathname;
-            return /^(\/|\/settings|\/join(?:\/[a-z0-9]+)?|\/(?:organizer|guest)\/[a-z0-9-]+\/[a-z0-9-]+)\/?$/i.test(path)
-                ? path : "/";
+            if (!/^(\/|\/account|\/settings|\/join(?:\/[a-z0-9]+)?|\/(?:organizer|guest)\/[a-z0-9-]+\/[a-z0-9-]+)\/?$/i.test(path)) return "/";
+            return path + (path === "/join/invite" && !address.search && /^#invite=[A-Za-z0-9_-]{43}$/.test(address.hash)
+                ? address.hash : "");
         } catch (_) {
             return "/";
         }
@@ -21,12 +22,11 @@
         const token = session.getItem("authToken") || "";
         const level = session.getItem("authLevel") || "none";
         const username = (local.getItem("defaultUsername") || "").trim();
-        const valid = token.length > 0 && token.length <= 8192 && ["member", "admin"].includes(level);
+        const valid = token.length > 0 && token.length <= 8192 && ["member", "admin", "guest"].includes(level);
         return {
             token: valid ? token : "",
             level: valid ? level : "none",
             username: validUsername(username) ? username : "",
-            usernameRequired: session.getItem("usernameRequired") === "true",
             memberId: (session.getItem("memberId") || "").slice(0, 100),
             memberName: (session.getItem("memberName") || "").slice(0, 60),
             memberRole: ["guest", "organizer"].includes(session.getItem("memberRole")) ? session.getItem("memberRole") : ""
@@ -34,7 +34,8 @@
     }
 
     function restoreSession(session, local, saved) {
-        if (!saved || typeof saved.token !== "string" || !saved.token || saved.token.length > 8192 || !["member", "admin"].includes(saved.level)) return;
+        for (const key of ["authToken", "authLevel", "usernameRequired", "memberId", "memberName", "memberRole"]) session.removeItem(key);
+        if (!saved || typeof saved.token !== "string" || !saved.token || saved.token.length > 8192 || !["member", "admin", "guest"].includes(saved.level)) return;
         session.setItem("authToken", saved.token);
         session.setItem("authLevel", saved.level);
         for (const key of ["memberId", "memberName", "memberRole"]) {
@@ -43,11 +44,6 @@
         }
         if (validUsername(saved.username)) {
             local.setItem("defaultUsername", saved.username.trim());
-        }
-        if (saved.usernameRequired) {
-            session.setItem("usernameRequired", "true");
-        } else {
-            session.removeItem("usernameRequired");
         }
     }
 
