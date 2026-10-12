@@ -248,6 +248,21 @@ test.describe("hosted sign-in routing", () => {
         await expect.poll(() => page.evaluate(() => window.nativeEvents.filter(event => event.type === "signin"))).toEqual([{ type: "signin" }]);
         expect((await checkpoint(page)).token).toBe("");
     });
+
+    test("checkpoints leaving an invitation before native sign-in disposes the WebView", async ({ page }) => {
+        const snapshots = await page.evaluate(invitation => {
+            const panel = document.querySelector(".passkey-panel");
+            panel.setAttribute("aria-labelledby", "invitation-title");
+            history.replaceState({}, "", `/join/invite#invite=${invitation}`);
+            window.KaraokeAndroid.snapshot();
+            panel.setAttribute("aria-labelledby", "passkey-title");
+            history.pushState({}, "", "/");
+            const handoff = window.nativeEvents.findIndex(event => event.type === "signin");
+            return window.nativeEvents.slice(0, handoff).filter(event => event.type === "snapshot").map(event => event.state);
+        }, invitation);
+        expect(snapshots.some(state => state.route === `/join/invite#invite=${invitation}`)).toBe(true);
+        expect(snapshots.at(-1).route).toBe("/");
+    });
 });
 
 test.describe("fixture AuthContext contract", () => {

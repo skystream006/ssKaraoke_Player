@@ -56,7 +56,10 @@
         const screen = location.pathname.replace(/\/$/, "") === "/account" ? "account"
             : !sessionStorage.getItem("authToken") &&
                 document.querySelector(".passkey-panel[aria-labelledby='passkey-title']") ? "signin" : "";
-        if (screen && screen !== browserAuthScreen) send(screen);
+        if (screen && screen !== browserAuthScreen) {
+            snapshot();
+            send(screen);
+        }
         browserAuthScreen = screen;
     }
 
