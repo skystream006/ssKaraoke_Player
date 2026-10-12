@@ -38,6 +38,7 @@ import android.webkit.WebStorage
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.FrameLayout
+import android.widget.GridLayout
 import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.LinearLayout
@@ -416,13 +417,15 @@ open class MainActivity : AppCompatActivity() {
         scroll.addView(body, ViewGroup.LayoutParams(-1, -2))
         layout.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
         body.addView(section("App updates"))
+        val updateRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         val status = text(updateStatus, 15f)
-        body.addView(status, rowParams(4, 12))
-        val indicator = LinearProgressIndicator(this).apply { max = 100; isVisible = false }
-        body.addView(indicator, rowParams(0, 12))
+        updateRow.addView(status, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = dp(12) })
         val check = button("Check for updates") { checkForUpdates(false) }
         check.id = View.generateViewId()
-        body.addView(check, rowParams())
+        updateRow.addView(check, LinearLayout.LayoutParams(0, -2, 1f))
+        body.addView(updateRow, rowParams(4, 12))
+        val indicator = LinearProgressIndicator(this).apply { max = 100; isVisible = false }
+        body.addView(indicator, rowParams(0, 12))
         val download = button("Download and install", outlined = true) {
             if (pendingApk != null) offerInstall() else confirmDownload()
         }
@@ -481,31 +484,46 @@ open class MainActivity : AppCompatActivity() {
         val identity = store.current.username.ifEmpty { store.current.memberName }.ifEmpty { "Not signed in" }
         body.addView(text(identity, 15f), rowParams(8, 12))
         if (store.current.origin.isNotEmpty()) {
-            body.addView(button("Home", true) { dialog.dismiss(); navigate("/") }, rowParams(8))
-            body.addView(button("Refresh", true) { dialog.dismiss(); refreshPage() }, rowParams(8))
+            val actions = GridLayout(this).apply { columnCount = 3 }
+            actions.addView(button("Home", true) { dialog.dismiss(); navigate("/") })
+            actions.addView(button("Refresh", true) { dialog.dismiss(); refreshPage() })
             if (store.current.token.isNotEmpty() && store.current.level in setOf("member", "admin")) {
-                body.addView(button("Switch user", true) {
+                actions.addView(button("Switch user", true) {
                     dialog.dismiss()
                     switchUser()
-                }, rowParams(8))
+                })
             }
-            body.addView(button("Open party link", true) { promptJoinLink(dialog) }, rowParams(8))
-            if (store.current.level == "admin") body.addView(button("Server administration", true) {
+            actions.addView(button("Open party link", true) { promptJoinLink(dialog) })
+            if (store.current.level == "admin") actions.addView(button("Server administration", true) {
                 dialog.dismiss(); navigate("/settings")
-            }, rowParams(8))
-            body.addView(button("Open in browser", true) { openExternal(store.current.origin + store.current.route, false) }, rowParams(8))
-            body.addView(button("Change server", true) {
+            })
+            actions.addView(button("Open in browser", true) { openExternal(store.current.origin + store.current.route, false) })
+            actions.addView(button("Change server", true) {
                 confirm("Change server?", "This removes this app's saved password, login, and party location for the current server.", "Change server") {
                     dialog.dismiss()
                     clearSession(SavedSession(theme = store.current.theme))
                 }
-            }, rowParams(8))
-            body.addView(button("Sign out", true) {
+            })
+            actions.addView(button("Sign out", true) {
                 confirm("Sign out?", "Remove the saved password and session from this device? Your party and its queue stay on the server.", "Sign out") {
                     dialog.dismiss()
                     clearSession(store.current.signedOut())
                 }
-            }, rowParams(8))
+            })
+            for (index in 0 until actions.childCount) {
+                val action = actions.getChildAt(index) as MaterialButton
+                action.minWidth = 0
+                action.setPadding(dp(8), action.paddingTop, dp(8), action.paddingBottom)
+                action.layoutParams = GridLayout.LayoutParams(
+                    GridLayout.spec(index / 3, GridLayout.FILL), GridLayout.spec(index % 3, 1f)
+                ).apply {
+                    width = 0
+                    height = ViewGroup.LayoutParams.WRAP_CONTENT
+                    topMargin = dp(8)
+                    marginEnd = if (index % 3 < 2) dp(8) else 0
+                }
+            }
+            body.addView(actions, rowParams())
         }
         body.addView(text("ssKaraoke Player v${BuildConfig.VERSION_NAME}", 13f, secondary = true), rowParams(28))
         dialog.setContentView(layout)
