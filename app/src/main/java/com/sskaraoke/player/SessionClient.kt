@@ -1,7 +1,9 @@
 package com.sskaraoke.player
 
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CopyableThrowable
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import okhttp3.Authenticator
@@ -33,6 +35,15 @@ internal suspend fun Call.awaitResponse(): Response = suspendCancellableCoroutin
 }
 
 class SignInRequired(message: String) : IOException(message)
+
+@OptIn(ExperimentalCoroutinesApi::class)
+class BrowserSignInException(message: String) : IOException(message), CopyableThrowable<BrowserSignInException> {
+    init {
+        initCause(null)
+    }
+
+    override fun createCopy(): BrowserSignInException? = null
+}
 
 class SessionClient(private val client: OkHttpClient = OkHttpClient.Builder()
     .followRedirects(false).followSslRedirects(false)
@@ -89,7 +100,7 @@ class SessionClient(private val client: OkHttpClient = OkHttpClient.Builder()
         } catch (failure: CancellationException) {
             throw failure
         } catch (_: Exception) {
-            throw IOException("Browser sign-in failed. Please try again.")
+            throw BrowserSignInException("Browser sign-in failed. Please try again.")
         }
     }
 
