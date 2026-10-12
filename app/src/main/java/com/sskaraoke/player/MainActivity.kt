@@ -59,6 +59,7 @@ import androidx.core.view.WindowInsetsControllerCompat
 import androidx.core.view.isVisible
 import androidx.lifecycle.lifecycleScope
 import androidx.webkit.ScriptHandler
+import androidx.webkit.WebSettingsCompat
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 import com.google.android.material.appbar.MaterialToolbar
@@ -91,7 +92,7 @@ open class MainActivity : AppCompatActivity() {
     private var connectionJob: Job? = null
     private var updateJob: Job? = null
     private var settingsDialog: Dialog? = null
-    private var renewOnResume = false
+    private var signOutJob: Job? = null
     private var connectionPaused = false
     private var isForeground = false
     private var startupCheckDone = false
@@ -207,12 +208,12 @@ open class MainActivity : AppCompatActivity() {
         }
         if (address.encrypted) proceed() else alertBuilder()
             .setTitle("Use unencrypted HTTP?")
-            .setMessage("Passwords and party traffic can be read on this network. Continue only on a trusted network. HTTPS is recommended.")
+            .setMessage("Passkey sign-in requires the configured HTTPS hostname. Session tokens and party traffic can be read on HTTP. Continue only on a trusted network.")
             .setNegativeButton("Cancel", null).setPositiveButton("Connect") { _, _ -> proceed() }.show().also { themeDialog(it) }
     }
 
-    private fun connect(forceRenew: Boolean = false) {
-        if (store.current.origin.isEmpty()) return
+    private fun connect() {
+        if (store.current.origin.isEmpty() || signOutJob?.isActive == true) return
         connectionJob?.cancel()
         if (webView == null) {
             val form = formPage()
@@ -221,23 +222,25 @@ open class MainActivity : AppCompatActivity() {
             form.addView(text("Connecting", 20f, true).apply { gravity = Gravity.CENTER }, rowParams(20))
         }
         pageProgress.isVisible = true
+        val saved = store.current
         connectionJob = lifecycleScope.launch {
             try {
-                val resumed = sessionClient.resume(store.current, forceRenew)
-                store.update(store.current.copy(token = resumed.token, level = resumed.level))
+                val resumed = sessionClient.resume(saved)
+                if (store.current.origin != saved.origin || store.current.token != saved.token) return@launch
+                store.update(store.current.copy(level = resumed.level, username = resumed.username))
                 showWebView()
-                if (forceRenew) toast("Session renewed. Please retry your last action.")
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (expired: SignInRequired) {
-                store.update(store.current.copy(token = "", level = "none", password = "", usernameRequired = false))
+                if (store.current.origin != saved.origin || store.current.token != saved.token) return@launch
+                store.update(store.current.signedOut().copy(
+                    route = store.current.route.takeIf { it.startsWith("/join/") } ?: "/"))
                 showWebView()
                 toast(expired.message.orEmpty())
             } catch (failure: Exception) {
-                if (webView == null) showError(failure.message ?: "Cannot reach the server.") { connect(forceRenew) }
+                if (webView == null) showError(failure.message ?: "Cannot reach the server.") { connect() }
                 else {
                     toast("Connection interrupted. Your sign-in is saved; use App settings > Refresh to reconnect.")
-                    webView?.evaluateJavascript("window.KaraokeAndroid?.retryAuthentication()", null)
                 }
             } finally { pageProgress.isVisible = false }
         }
@@ -269,6 +272,11 @@ open class MainActivity : AppCompatActivity() {
             safeBrowsingEnabled = true
             setSupportMultipleWindows(false)
             userAgentString = "$userAgentString ssKaraoke-Player/${BuildConfig.VERSION_NAME}"
+        }
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.WEB_AUTHENTICATION)) {
+            WebSettingsCompat.setWebAuthenticationSupport(browser.settings, WebSettingsCompat.WEB_AUTHENTICATION_SUPPORT_FOR_APP)
+        } else {
+            toast("Passkeys are unavailable. Update Android System WebView and your credential provider, or use a host invitation.")
         }
         CookieManager.getInstance().setAcceptThirdPartyCookies(browser, true)
         WebViewCompat.addWebMessageListener(browser, "KaraokeHost", setOf(server.origin)) { view, message, source, mainFrame, _ ->
@@ -359,19 +367,9 @@ open class MainActivity : AppCompatActivity() {
                 store.update(store.current.withSnapshot(snapshot).copy(theme = store.current.theme))
                 updateKeepAwake()
             }
-            "credentials" -> {
-                val token = message.optString("token")
-                val level = message.optString("level")
-                val password = message.optString("password")
-                if (token.isEmpty() || token.length > 8192 || password.length > 4096 || level !in setOf("member", "admin")) return
-                store.update(store.current.copy(token = token, level = level, password = password,
-                    kind = if (message.optString("kind") == "qr") "qr" else "password"))
-            }
-            "expired" -> {
-                if (connectionJob?.isActive == true) return
-                if (isForeground) connect(true) else renewOnResume = true
-            }
-            "logout" -> clearSession(store.current.signedOut())
+            "unavailable" -> showError("Session verification is temporarily unavailable. Your sign-in is saved.") { connect() }
+            "logout" -> clearSession(store.current.signedOut().copy(
+                route = store.current.route.takeIf { it.startsWith("/join/") } ?: "/"))
             "ready" -> webView?.evaluateJavascript("window.KaraokeAndroid?.applyTheme(${JSONObject.quote(store.current.theme)})", null)
             "haptic" -> webView?.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
         }
@@ -481,16 +479,22 @@ open class MainActivity : AppCompatActivity() {
         }
         body.addView(section("Server and sign-in"))
         body.addView(text(store.current.origin.ifEmpty { "No server selected" }, 15f).apply { setTextIsSelectable(true) }, rowParams(4))
-        val identity = store.current.username.ifEmpty { store.current.memberName }.ifEmpty { "Not signed in" }
+        val identity = if (store.current.token.isEmpty()) "Not signed in"
+            else store.current.memberName.takeIf { store.current.level == "guest" }
+                ?.ifEmpty { "Guest" } ?: store.current.username.ifEmpty { store.current.memberName }.ifEmpty { "Signed in" }
         body.addView(text(identity, 15f), rowParams(8, 12))
         if (store.current.origin.isNotEmpty()) {
             val actions = GridLayout(this).apply { columnCount = 3 }
             actions.addView(button("Home", true) { dialog.dismiss(); navigate("/") })
             actions.addView(button("Refresh", true) { dialog.dismiss(); refreshPage() })
             if (store.current.token.isNotEmpty() && store.current.level in setOf("member", "admin")) {
+                actions.addView(button("Account and passkeys", true) { dialog.dismiss(); navigate("/account") })
+            }
+            if (store.current.token.isNotEmpty()) {
                 actions.addView(button("Switch user", true) {
-                    dialog.dismiss()
-                    switchUser()
+                    confirm("Switch user?", "Sign out and revoke this session and its host invitations, then sign in with another passkey or invitation?", "Switch user") {
+                        dialog.dismiss(); signOut()
+                    }
                 })
             }
             actions.addView(button("Open party link", true) { promptJoinLink(dialog) })
@@ -499,15 +503,15 @@ open class MainActivity : AppCompatActivity() {
             })
             actions.addView(button("Open in browser", true) { openExternal(store.current.origin + store.current.route, false) })
             actions.addView(button("Change server", true) {
-                confirm("Change server?", "This removes this app's saved password, login, and party location for the current server.", "Change server") {
+                confirm("Change server?", "Sign out of this server and revoke this session and its host invitations before choosing another server?", "Change server") {
                     dialog.dismiss()
-                    clearSession(SavedSession(theme = store.current.theme))
+                    signOut(changeServer = true)
                 }
             })
             actions.addView(button("Sign out", true) {
-                confirm("Sign out?", "Remove the saved password and session from this device? Your party and its queue stay on the server.", "Sign out") {
+                confirm("Sign out?", "Revoke this session and its host invitations and remove the saved login? Your party and its queue stay on the server.", "Sign out") {
                     dialog.dismiss()
-                    clearSession(store.current.signedOut())
+                    signOut()
                 }
             })
             for (index in 0 until actions.childCount) {
@@ -637,7 +641,7 @@ open class MainActivity : AppCompatActivity() {
 
     private fun promptJoinLink(parent: Dialog? = null, prefill: String = "") {
         if (store.current.origin.isEmpty()) { showServerSetup(prefill); return }
-        val (field, input) = inputField("Join code or link", prefill)
+        val (field, input) = inputField("Host invitation link", prefill)
         val wrapper = LinearLayout(this).apply { setPadding(dp(24), dp(8), dp(24), 0); addView(field, rowParams()) }
         val dialog = alertBuilder().setTitle("Join a party").setView(wrapper)
             .setNegativeButton("Cancel", null).setPositiveButton("Open", null).create()
@@ -645,8 +649,8 @@ open class MainActivity : AppCompatActivity() {
             dialog.getButton(Dialog.BUTTON_POSITIVE).setOnClickListener {
                 val value = input.text.toString().trim()
                 val server = ServerAddress.parse(store.current.origin)
-                val route = if (Regex("[a-zA-Z0-9]+").matches(value)) "/join/$value" else server.safeRoute(value)
-                if (!Regex("/join/[a-zA-Z0-9]+/?").matches(route)) field.error = "Enter a join code or a link from the selected server."
+                val route = server.safeRoute(value)
+                if (!Regex("/join/invite#invite=[A-Za-z0-9_-]{43}").matches(route)) field.error = "Enter a current host invitation link from the selected server."
                 else { dialog.dismiss(); parent?.dismiss(); navigate(route) }
             }
         }
@@ -667,15 +671,33 @@ open class MainActivity : AppCompatActivity() {
         if (store.current.origin.isEmpty()) showServerSetup(link) else promptJoinLink(prefill = link)
     }
 
-    private fun switchUser() {
+    private fun signOut(changeServer: Boolean = false) {
+        if (signOutJob?.isActive == true) return
         connectionJob?.cancel()
+        connectionJob = null
+        connectionPaused = false
         sessionClient.cancel()
+        val saved = store.current
         disposeWebView()
-        store.update(store.current.switchUser())
-        showWebView()
+        formPage().addView(text("Signing out...", 20f, true))
+        pageProgress.isVisible = true
+        signOutJob = lifecycleScope.launch {
+            try {
+                sessionClient.logout(saved)
+                if (store.current.origin == saved.origin && store.current.token == saved.token) {
+                    signOutJob = null
+                    clearSession(if (changeServer) SavedSession(theme = store.current.theme) else store.current.signedOut())
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                showError("Sign-out could not be confirmed. Your login is saved. Retry to revoke this session and its invitations.") { signOut(changeServer) }
+            } finally { pageProgress.isVisible = false }
+        }
     }
 
     private fun clearSession(replacement: SavedSession) {
+        connectionPaused = false
         connectionJob?.cancel()
         sessionClient.cancel()
         disposeWebView()
@@ -736,11 +758,9 @@ open class MainActivity : AppCompatActivity() {
         webView?.onResume()
         webView?.resumeTimers()
         updateKeepAwake()
-        if (renewOnResume || connectionPaused) {
-            val force = renewOnResume
-            renewOnResume = false
+        if (connectionPaused) {
             connectionPaused = false
-            connect(force)
+            connect()
         }
         if (!startupCheckDone && automaticUpdateChecks()) {
             startupCheckDone = true

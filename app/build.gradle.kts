@@ -73,6 +73,8 @@ dependencies {
     implementation("androidx.activity:activity-ktx:1.10.1")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.9.0")
     implementation("androidx.webkit:webkit:1.14.0")
+    implementation("androidx.credentials:credentials:1.5.0")
+    implementation("androidx.credentials:credentials-play-services-auth:1.5.0")
     implementation("com.google.android.material:material:1.13.0")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")

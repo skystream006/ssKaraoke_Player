@@ -9,7 +9,7 @@
     delete window.__karaokeThemes;
     const scrollSelectors = [".sidebar-body", ".guest-main", ".queue-section", ".search-section"];
     let snapshotTimer;
-    let renewalRequested = false;
+    let authenticationUnavailable = false;
     let restoring = true;
     let lastSnapshot = "";
 
@@ -26,7 +26,7 @@
     }
 
     function snapshot() {
-        if (restoring) return;
+        if (authenticationUnavailable) return;
         const scroll = { window: Math.round(window.scrollY) };
         for (const selector of scrollSelectors) {
             const element = document.querySelector(selector);
@@ -36,7 +36,7 @@
             ...contract.readSession(sessionStorage, localStorage),
             route: contract.safeLocation(location.href, location.origin),
             theme: localStorage.getItem("karaokeTheme") || "neonPurple",
-            view: { tab: tabKey(tabs().find(button => button.classList.contains("active"))), scroll }
+            view: restoring ? seed.view || {} : { tab: tabKey(tabs().find(button => button.classList.contains("active"))), scroll }
         };
         const serialized = JSON.stringify(state);
         if (serialized !== lastSnapshot) {
@@ -67,60 +67,50 @@
         } catch (_) { return ""; }
     }
 
-    function passwordFrom(body) {
-        try {
-            const password = JSON.parse(body).password;
-            return typeof password === "string" && password.length <= 4096 ? password : "";
-        } catch (_) { return ""; }
-    }
-
-    function responseReceived(path, method, status, data, password) {
-        const passwordLogin = path === "/api/auth" && method === "POST";
-        const qrLogin = path === "/api/auth/qr-session" && method === "GET";
-        if ((passwordLogin || qrLogin) && status >= 200 && status < 300 && data?.token && ["member", "admin"].includes(data.level)) {
-            send("credentials", { token: data.token, level: data.level, password: passwordLogin ? password : "", kind: qrLogin ? "qr" : "password" });
-            renewalRequested = false;
-        } else if (path && !passwordLogin && !qrLogin && status === 401 && !renewalRequested) {
-            renewalRequested = true;
-            send("expired");
+    function sessionResponse(path, token, status) {
+        // AuthContext clears storage on any /me failure, including temporary outages.
+        if (path !== "/api/auth/me" || !token || token !== sessionStorage.getItem("authToken")) return;
+        if (status !== 401 && (status < 200 || status >= 300) && !authenticationUnavailable) {
+            authenticationUnavailable = true;
+            send("unavailable");
         }
     }
 
     const originalFetch = window.fetch;
     if (originalFetch) window.fetch = async function (input, options) {
         const path = apiRequest(typeof input === "string" || input instanceof URL ? input : input.url);
-        const method = (options?.method || input?.method || "GET").toUpperCase();
-        const body = path === "/api/auth"
-            ? (typeof options?.body === "string" ? Promise.resolve(options.body) : input instanceof Request ? input.clone().text() : Promise.resolve(""))
-            : Promise.resolve("");
-        const response = await originalFetch.apply(this, arguments);
-        if (path) {
-            const data = path === "/api/auth" || path === "/api/auth/qr-session" ? response.clone().json().catch(() => null) : Promise.resolve(null);
-            Promise.all([data, body]).then(([result, text]) => responseReceived(path, method, response.status, result, passwordFrom(text))).catch(() => {});
+        const token = sessionStorage.getItem("authToken");
+        try {
+            const response = await originalFetch.apply(this, arguments);
+            sessionResponse(path, token, response.status);
+            return response;
+        } catch (error) {
+            sessionResponse(path, token, 0);
+            throw error;
         }
-        return response;
     };
 
     const requests = new WeakMap();
     const originalOpen = XMLHttpRequest.prototype.open;
     const originalSend = XMLHttpRequest.prototype.send;
     XMLHttpRequest.prototype.open = function (method, url) {
-        requests.set(this, { method: String(method).toUpperCase(), path: apiRequest(url) });
-        return originalOpen.apply(this, arguments);
+        const result = originalOpen.apply(this, arguments);
+        const request = { path: apiRequest(url), token: null };
+        requests.set(this, request);
+        if (request.path === "/api/auth/me") {
+            // Install before Axios assigns onerror, whose rejection clears sessionStorage.
+            const events = ["load", "error", "timeout", "abort"];
+            const finished = () => {
+                for (const event of events) this.removeEventListener(event, finished, true);
+                sessionResponse(request.path, request.token, this.status);
+            };
+            for (const event of events) this.addEventListener(event, finished, { capture: true });
+        }
+        return result;
     };
     XMLHttpRequest.prototype.send = function (body) {
         const request = requests.get(this);
-        if (request?.path) {
-            const password = request.path === "/api/auth" ? passwordFrom(body) : "";
-            this.addEventListener("load", () => {
-                let data = null;
-                if (request.path === "/api/auth" || request.path === "/api/auth/qr-session") {
-                    try { data = this.responseType === "json" ? this.response : JSON.parse(this.responseText); } catch (_) { }
-                }
-                responseReceived(request.path, request.method, this.status, data, password);
-                requests.delete(this);
-            }, { once: true });
-        }
+        if (request) request.token = sessionStorage.getItem("authToken");
         return originalSend.apply(this, arguments);
     };
 
@@ -130,7 +120,8 @@
             const signingOut = this === sessionStorage && sessionStorage.getItem("authToken") &&
                 (method === "clear" || method === "removeItem" && key === "authToken");
             const result = original.apply(this, arguments);
-            if (signingOut) send("logout");
+            if (signingOut && !authenticationUnavailable) send("logout");
+            if (this === sessionStorage && key === "authLevel" || this === localStorage && key === "defaultUsername") snapshot();
             if (this === sessionStorage || this === localStorage) scheduleSnapshot();
             return result;
         };
@@ -192,7 +183,7 @@
             wasDragging = dragging;
             if (!restoring || restoreQueued) return;
             const available = tabs();
-            if (!available.length && performance.now() - started < 15000 && !document.querySelector(".password-modal, input[type=password], .error-screen")) return;
+            if (!available.length && performance.now() - started < 15000 && !document.querySelector(".passkey-panel, .error-screen")) return;
             restoreQueued = true;
             requestAnimationFrame(() => {
                 if (seed.route === location.pathname && seed.view) {
@@ -219,7 +210,7 @@
         send("ready");
     }
 
-    window.KaraokeAndroid = { snapshot, applyTheme, retryAuthentication: () => { renewalRequested = false; } };
+    window.KaraokeAndroid = { snapshot, applyTheme };
     if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", attach, { once: true });
     else attach();
 })();

@@ -33,30 +33,31 @@ class SessionClient(private val client: OkHttpClient = OkHttpClient.Builder()
     .followRedirects(false).followSslRedirects(false)
     .callTimeout(20, TimeUnit.SECONDS).build()) {
 
-    suspend fun resume(saved: SavedSession, forceRenew: Boolean = false): SavedSession = withContext(Dispatchers.IO) {
-        if (saved.origin.isBlank() || saved.token.isBlank() && !forceRenew) return@withContext saved
+    suspend fun resume(saved: SavedSession): SavedSession = withContext(Dispatchers.IO) {
+        if (saved.origin.isBlank() || saved.token.isBlank()) return@withContext saved
         val server = ServerAddress.parse(saved.origin)
-        if (!forceRenew) {
-            val request = Request.Builder().url(server.api("parties")).header("Authorization", "Bearer ${saved.token}").build()
-            client.newCall(request).awaitResponse().use { response ->
-                if (response.isSuccessful) return@withContext saved
-                if (response.code != 401) throw IOException("Server returned HTTP ${response.code}. Sign-in has been preserved.")
-            }
-        }
-        val request = when {
-            saved.kind == "qr" -> Request.Builder().url(server.api("auth/qr-session")).build()
-            saved.password.isNotEmpty() -> Request.Builder().url(server.api("auth"))
-                .post(JSONObject().put("password", saved.password).toString().toRequestBody("application/json".toMediaType())).build()
-            else -> throw SignInRequired("Your session expired. Please sign in again.")
-        }
+        val request = Request.Builder().url(server.api("auth/me"))
+            .header("Authorization", "Bearer" + " " + saved.token).build()
         client.newCall(request).awaitResponse().use { response ->
-            if (response.code == 401 || response.code == 403) throw SignInRequired("Your saved sign-in is no longer accepted. Please sign in again.")
-            if (!response.isSuccessful) throw IOException("Sign-in service returned HTTP ${response.code}. Try again shortly.")
+            if (response.code == 401) throw SignInRequired("Your session ended. Sign in with a passkey or scan a current host invitation.")
+            if (!response.isSuccessful) throw IOException("Server returned HTTP ${response.code}. Sign-in has been preserved.")
             val result = JSONObject(response.body?.string() ?: throw IOException("Empty sign-in response."))
-            val token = result.optString("token")
             val level = result.optString("level")
-            if (token.isEmpty() || token.length > 8192 || level !in setOf("member", "admin")) throw IOException("Invalid sign-in response.")
-            saved.copy(token = token, level = level)
+            if (level !in SavedSession.levels) throw IOException("Invalid sign-in response.")
+            saved.copy(level = level, username = result.optJSONObject("user")?.optString("name")
+                ?.trim()?.takeIf { it.length in 1..60 } ?: saved.username)
+        }
+    }
+
+    suspend fun logout(saved: SavedSession) = withContext(Dispatchers.IO) {
+        if (saved.origin.isBlank() || saved.token.isBlank()) return@withContext
+        val request = Request.Builder().url(ServerAddress.parse(saved.origin).api("auth/logout"))
+            .header("Authorization", "Bearer" + " " + saved.token)
+            .post("{}".toRequestBody("application/json".toMediaType())).build()
+        client.newCall(request).awaitResponse().use { response ->
+            if (!response.isSuccessful && response.code != 401) {
+                throw IOException("Sign-out failed. Retry to revoke this session and its invitations.")
+            }
         }
     }
 

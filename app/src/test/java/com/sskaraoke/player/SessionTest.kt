@@ -23,87 +23,91 @@ class SessionTest {
         }
     }
 
-    @Test fun seedNeverContainsPasswordAndSnapshotNeverReplacesIt() {
-        val saved = SavedSession(origin = "https://karaoke.example", token = "token", level = "admin", password = "private")
-        assertFalse(saved.seed().toString().contains("private"))
+    @Test fun legacyPasswordsAndUsernameRequirementsAreDiscarded() {
+        val saved = SavedSession.fromJson(JSONObject().put("origin", "https://karaoke.example")
+            .put("token", "token").put("level", "admin").put("password", "private")
+            .put("kind", "password").put("usernameRequired", true))
+        assertFalse(saved.toJson().has("password"))
+        assertFalse(saved.toJson().has("kind"))
+        assertFalse(saved.seed().has("usernameRequired"))
         val changed = saved.withSnapshot(JSONObject().put("token", "token").put("level", "admin")
             .put("password", "untrusted").put("route", "https://evil.example/settings").put("username", "Alex"))
-        assertEquals("private", changed.password)
+        assertFalse(changed.toJson().has("password"))
         assertEquals("/", changed.route)
         assertEquals(changed, SavedSession.fromJson(changed.toJson()))
-        assertEquals("", changed.signedOut().password)
         assertEquals("", changed.signedOut().token)
     }
 
-    @Test fun switchingUserKeepsLoginAndClearsOnlyTheActiveMemberAndLocation() {
-        for (level in listOf("member", "admin")) {
+    @Test fun accountAndGuestSessionsRoundTripAndSignOutClearsIdentity() {
+        for (level in SavedSession.levels) {
             val saved = SavedSession(origin = "https://karaoke.example", token = "valid", level = level,
-                password = "secret", username = "Alex", memberId = "member-1", memberName = "Alex",
+                username = "Alex", memberId = "member-1", memberName = "Alex",
                 memberRole = "organizer", route = "/organizer/party-1/member-1", theme = "forest", view = "{\"tab\":\"search\"}")
-            val switched = saved.switchUser()
-            assertEquals(saved.copy(usernameRequired = true, memberId = "", memberName = "", memberRole = "", route = "/", view = "{}"), switched)
-            assertEquals(switched, SavedSession.fromJson(switched.toJson()))
-            assertTrue(switched.seed().getBoolean("usernameRequired"))
-            assertFalse(switched.seed().has("password"))
+            assertEquals(saved, SavedSession.fromJson(saved.toJson()))
+            assertEquals(level, saved.seed().getString("level"))
+            assertEquals(SavedSession(origin = saved.origin, theme = saved.theme), saved.signedOut())
         }
     }
 
-    @Test fun switchingQrUserDoesNotRequestAPasswordOrChangeAuthenticationKind() {
-        val switched = SavedSession(origin = "https://karaoke.example", token = "qr-token", level = "member", kind = "qr").switchUser()
-        assertTrue(switched.usernameRequired)
-        assertEquals("qr", switched.kind)
-        assertEquals("qr-token", switched.token)
-        assertEquals("", switched.password)
-        assertEquals(SavedSession(), SavedSession().switchUser())
+    @Test fun invitationFragmentsArePreservedOnlyForCanonicalSameOriginLinks() {
+        val token = "a".repeat(41) + "_-"
+        val route = "/join/invite#invite=$token"
+        val server = ServerAddress.parse("https://karaoke.example$route")
+        assertEquals("https://karaoke.example", server.origin)
+        assertEquals(route, server.initialRoute)
+        assertEquals(route, server.safeRoute(route))
+        assertEquals("/account", server.safeRoute("/account"))
+        assertEquals("/", server.safeRoute("https://evil.example$route"))
+        assertEquals("/join/invite", server.safeRoute("/join/invite#invite=invalid"))
+        assertEquals("/join/invite", server.safeRoute("/join/invite?other=1#invite=$token"))
+        assertEquals("/settings", server.safeRoute("/settings#invite=$token"))
+        listOf("https://karaoke.example/#invite=$token", "https://karaoke.example/join/invite#invite=short",
+            "https://karaoke.example$route&other=1").forEach {
+            assertThrows(IllegalArgumentException::class.java) { ServerAddress.parse(it) }
+        }
+        val saved = SavedSession(origin = server.origin, route = route)
+        assertEquals(route, SavedSession.fromJson(saved.toJson()).route)
     }
 
-    @Test fun validSessionDoesNotResendPassword() = runBlocking {
+    @Test fun validSessionUsesMeWithoutSigningInAgain() = runBlocking {
         MockWebServer().use { server ->
-            server.enqueue(MockResponse().setBody("[]"))
-            val saved = SavedSession(origin = server.url("/").toString(), token = "valid", level = "member", password = "secret")
+            server.enqueue(MockResponse().setBody("""{"level":"member","user":{"name":"Alex"}}"""))
+            val saved = SavedSession(origin = server.url("/").toString(), token = "valid", level = "member", username = "Alex")
             assertEquals(saved, SessionClient().resume(saved))
             assertEquals("Bearer valid", server.takeRequest().getHeader("Authorization"))
             assertEquals(1, server.requestCount)
         }
     }
 
-    @Test fun expiredPasswordSessionRenewsAtTheSavedServer() = runBlocking {
+    @Test fun expiredSessionRequiresPasskeyWithoutCallingRemovedEndpoints() = runBlocking {
         MockWebServer().use { server ->
             server.enqueue(MockResponse().setResponseCode(401))
-            server.enqueue(MockResponse().setBody("""{"token":"renewed","level":"member"}"""))
-            val saved = SavedSession(origin = server.url("/").toString(), token = "old", level = "member", password = "secret", username = "Alex", route = "/guest/1/2")
-            val renewed = SessionClient().resume(saved)
-            assertEquals("renewed", renewed.token)
-            assertEquals("Alex", renewed.username)
-            assertEquals("/guest/1/2", renewed.route)
-            server.takeRequest()
-            val login = server.takeRequest()
-            assertEquals("/api/auth", login.path)
-            assertEquals("secret", JSONObject(login.body.readUtf8()).getString("password"))
-            assertNull(login.getHeader("Authorization"))
-        }
-    }
-
-    @Test fun qrSessionRenewsWithoutInventingAPassword() = runBlocking {
-        MockWebServer().use { server ->
-            server.enqueue(MockResponse().setResponseCode(401))
-            server.enqueue(MockResponse().setBody("""{"token":"qr-new","level":"member"}"""))
-            val saved = SavedSession(origin = server.url("/").toString(), token = "old", kind = "qr")
-            assertEquals("qr-new", SessionClient().resume(saved).token)
-            server.takeRequest()
-            assertEquals("/api/auth/qr-session", server.takeRequest().path)
-        }
-    }
-
-    @Test fun failedRenewalRequiresLoginWithoutRetryLoop() = runBlocking {
-        MockWebServer().use { server ->
-            server.enqueue(MockResponse().setResponseCode(401))
-            server.enqueue(MockResponse().setResponseCode(401))
-            val saved = SavedSession(origin = server.url("/").toString(), token = "old", password = "changed")
+            val saved = SavedSession(origin = server.url("/").toString(), token = "old", level = "member")
             try {
                 SessionClient().resume(saved)
                 fail("Expected sign-in requirement")
-            } catch (_: SignInRequired) { assertEquals(2, server.requestCount) }
+            } catch (_: SignInRequired) {
+                assertEquals(1, server.requestCount)
+                assertEquals("/api/auth/me", server.takeRequest().path)
+            }
+        }
+    }
+
+    @Test fun guestSessionCanResumeWithoutAccountOnlyPartiesRequest() = runBlocking {
+        MockWebServer().use { server ->
+            server.enqueue(MockResponse().setBody("""{"level":"guest","user":null,"partyId":"party","memberId":"guest"}"""))
+            val saved = SavedSession(origin = server.url("/").toString(), token = "guest-session", level = "guest",
+                memberId = "guest", memberName = "Alex", route = "/guest/party/guest")
+            assertEquals(saved, SessionClient().resume(saved))
+            assertEquals("/api/auth/me", server.takeRequest().path)
+        }
+    }
+
+    @Test fun meUpdatesAccountNameAndAccessLevel() = runBlocking {
+        MockWebServer().use { server ->
+            server.enqueue(MockResponse().setBody("""{"level":"member","user":{"name":"Blair"}}"""))
+            val saved = SavedSession(origin = server.url("/").toString(), token = "valid", level = "admin", username = "Alex")
+            assertEquals(saved.copy(level = "member", username = "Blair"), SessionClient().resume(saved))
         }
     }
 
@@ -112,7 +116,7 @@ class SessionTest {
             MockWebServer().use { server ->
                 server.enqueue(MockResponse().setResponseCode(status).setHeader("Location", "https://evil.example"))
                 try {
-                    SessionClient().resume(SavedSession(origin = server.url("/").toString(), token = "old", password = "secret"))
+                    SessionClient().resume(SavedSession(origin = server.url("/").toString(), token = "old"))
                     fail("Expected HTTP failure")
                 } catch (failure: IOException) {
                     assertFalse(failure is SignInRequired)
@@ -120,5 +124,33 @@ class SessionTest {
                 }
             }
         }
+    }
+
+    @Test fun logoutRevokesSavedTokenAndAcceptsAlreadyExpiredSessions() = runBlocking {
+        for (status in listOf(200, 204, 401)) MockWebServer().use { server ->
+            server.enqueue(MockResponse().setResponseCode(status))
+            SessionClient().logout(SavedSession(origin = server.url("/").toString(), token = "valid"))
+            val request = server.takeRequest()
+            assertEquals("/api/auth/logout", request.path)
+            assertEquals("POST", request.method)
+            assertEquals(listOf("Bearer", "valid").joinToString(" "), request.getHeader("Authorization"))
+            assertEquals("{}", request.body.readUtf8())
+        }
+    }
+
+    @Test fun failedLogoutDoesNotFollowRedirectsOrSucceedSilently() = runBlocking {
+        for (status in listOf(302, 403, 503)) MockWebServer().use { server ->
+            server.enqueue(MockResponse().setResponseCode(status).setHeader("Location", "https://evil.example"))
+            try {
+                SessionClient().logout(SavedSession(origin = server.url("/").toString(), token = "valid"))
+                fail("Expected sign-out failure")
+            } catch (_: IOException) { assertEquals(1, server.requestCount) }
+        }
+    }
+
+    @Test fun signedOutSessionsNeedNoNetworkRequest() = runBlocking {
+        val saved = SavedSession(origin = "https://karaoke.example")
+        assertEquals(saved, SessionClient().resume(saved))
+        SessionClient().logout(saved)
     }
 }
