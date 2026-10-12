@@ -28,4 +28,30 @@ class SessionStoreDeviceTest {
             SessionStore(context).use { reopened -> assertEquals("", reopened.current.token) }
         } finally { directory.deleteRecursively() }
     }
+
+    @Test fun pendingBrowserLoginIsEncryptedAndConsumedDurably() {
+        val target = InstrumentationRegistry.getInstrumentation().targetContext
+        val directory = File(target.cacheDir, "browser-vault-test-${System.nanoTime()}").apply { mkdirs() }
+        val context = object : ContextWrapper(target) { override fun getNoBackupFilesDir(): File = directory }
+        val pending = BrowserAuth.begin("https://karaoke.example")
+        val saved = SavedSession(origin = pending.origin, pendingLogin = pending)
+        try {
+            SessionStore(context).use { store ->
+                store.update(saved)
+                store.flush()
+                assertFalse(store.writeFailed)
+            }
+            val encrypted = File(directory, "session.encrypted").readBytes().toString(Charsets.ISO_8859_1)
+            assertFalse(encrypted.contains(pending.verifier))
+            assertFalse(encrypted.contains(pending.state))
+            SessionStore(context).use { reopened ->
+                assertEquals(pending, reopened.current.pendingLogin)
+                assertFalse(reopened.current.seed().toString().contains(pending.verifier))
+                reopened.update(reopened.current.copy(pendingLogin = null))
+                reopened.flush()
+                assertFalse(reopened.writeFailed)
+            }
+            SessionStore(context).use { reopened -> assertNull(reopened.current.pendingLogin) }
+        } finally { directory.deleteRecursively() }
+    }
 }

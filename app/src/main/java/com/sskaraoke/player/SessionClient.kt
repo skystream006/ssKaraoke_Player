@@ -1,17 +1,22 @@
 package com.sskaraoke.player
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import okhttp3.Authenticator
 import okhttp3.Call
 import okhttp3.Callback
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
+import okio.BufferedSink
 import org.json.JSONObject
 import java.io.IOException
+import java.time.Instant
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resumeWithException
 
@@ -32,6 +37,61 @@ class SignInRequired(message: String) : IOException(message)
 class SessionClient(private val client: OkHttpClient = OkHttpClient.Builder()
     .followRedirects(false).followSslRedirects(false)
     .callTimeout(20, TimeUnit.SECONDS).build()) {
+
+    private val exchangeClient = client.newBuilder()
+        .followRedirects(false).followSslRedirects(false).retryOnConnectionFailure(false)
+        .authenticator(Authenticator.NONE).proxyAuthenticator(Authenticator.NONE)
+        .callTimeout(20, TimeUnit.SECONDS).build()
+
+    suspend fun exchange(authorization: BrowserAuthorizationCode): SavedSession = withContext(Dispatchers.IO) {
+        try {
+            val origin = BrowserAuth.validatedOrigin(authorization.origin)
+            BrowserAuth.validateCode(authorization.code)
+            BrowserAuth.challenge(authorization.verifier)
+            val payload = JSONObject().put("code", authorization.code)
+                .put("code_verifier", authorization.verifier).put("redirect_uri", BrowserAuth.REDIRECT_URI)
+                .toString().toByteArray(Charsets.UTF_8)
+            val body = object : RequestBody() {
+                override fun contentType() = "application/json".toMediaType()
+                override fun contentLength() = payload.size.toLong()
+                // Authorization codes are single-use, including across HTTP follow-up attempts.
+                override fun isOneShot() = true
+                override fun writeTo(sink: BufferedSink) { sink.write(payload) }
+            }
+            val request = Request.Builder().url(ServerAddress.parse(origin).api("auth/app/token"))
+                .header("Accept", "application/json").post(body).build()
+            exchangeClient.newCall(request).awaitResponse().use { response ->
+                require(response.isSuccessful)
+                val responseBody = response.body ?: throw IOException()
+                val source = responseBody.source()
+                require(responseBody.contentLength() <= 64 * 1024 && !source.request(64 * 1024L + 1))
+                val result = JSONObject(source.readUtf8())
+                val token = result.opt("token") as? String ?: throw IOException()
+                val level = result.opt("level") as? String ?: throw IOException()
+                val username = (result.optJSONObject("user")?.opt("name") as? String)?.trim() ?: throw IOException()
+                require(token.length in 1..8192 && token.all { it.code in 33..126 })
+                require(level in setOf("member", "admin"))
+                require(username.length in 1..60 && username.codePoints().noneMatch {
+                    Character.isISOControl(it) || it in 0xD800..0xDFFF || it == 0xFFFD
+                })
+                val expiresAt = when (val expiry = result.opt("expiresAt")) {
+                    is String -> {
+                        require(expiry.length <= 64)
+                        Instant.parse(expiry)
+                    }
+                    is Long -> Instant.ofEpochMilli(expiry)
+                    is Int -> Instant.ofEpochMilli(expiry.toLong())
+                    else -> throw IOException()
+                }
+                require(expiresAt.isAfter(Instant.now()))
+                SavedSession(origin = origin, token = token, level = level, username = username)
+            }
+        } catch (failure: CancellationException) {
+            throw failure
+        } catch (_: Exception) {
+            throw IOException("Browser sign-in failed. Please try again.")
+        }
+    }
 
     suspend fun resume(saved: SavedSession): SavedSession = withContext(Dispatchers.IO) {
         if (saved.origin.isBlank() || saved.token.isBlank()) return@withContext saved

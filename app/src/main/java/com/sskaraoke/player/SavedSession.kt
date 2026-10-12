@@ -12,7 +12,8 @@ data class SavedSession(
     val memberRole: String = "",
     val route: String = "/",
     val theme: String = "neonPurple",
-    val view: String = "{}"
+    val view: String = "{}",
+    val pendingLogin: PendingBrowserLogin? = null
 ) {
     fun seed(): JSONObject = JSONObject()
         .put("token", token).put("level", level).put("username", username)
@@ -20,7 +21,9 @@ data class SavedSession(
         .put("memberName", memberName).put("memberRole", memberRole)
         .put("route", route).put("theme", theme).put("view", JSONObject(view))
 
-    fun toJson(): JSONObject = seed().put("origin", origin)
+    fun toJson(): JSONObject = seed().put("origin", origin).apply {
+        pendingLogin?.let { put("pendingLogin", it.toJson()) }
+    }
 
     fun withSnapshot(state: JSONObject): SavedSession {
         val candidateToken = state.optString("token").takeIf { it.length <= 8192 }.orEmpty()
@@ -49,7 +52,15 @@ data class SavedSession(
 
         fun fromJson(json: JSONObject): SavedSession {
             val origin = json.optString("origin").takeIf { it.isNotEmpty() }?.let { ServerAddress.parse(it).origin }.orEmpty()
-            return SavedSession(origin = origin).withSnapshot(json)
+            val saved = SavedSession(origin = origin).withSnapshot(json)
+            val pending = if (saved.token.isEmpty() && saved.level == "none" && json.optString("token").isEmpty()) {
+                json.optJSONObject("pendingLogin")?.let {
+                    try {
+                        PendingBrowserLogin.fromJson(it).takeIf { login -> login.origin == origin }
+                    } catch (_: IllegalArgumentException) { null }
+                }
+            } else null
+            return saved.copy(pendingLogin = pending)
         }
     }
 }

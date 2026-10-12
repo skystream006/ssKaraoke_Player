@@ -1,5 +1,7 @@
 package com.sskaraoke.player
 
+import android.content.Intent
+import android.net.Uri
 import android.os.Looper
 import android.os.Build
 import android.graphics.Color
@@ -122,6 +124,90 @@ class NativeUiTest {
             assertTrue(ocean.isChecked)
             assertEquals(1, themes.count { it.isChecked })
             dialog.dismiss()
+        }
+    }
+
+    @Test fun signedOutHomeUsesNativeBrowserSignInInsteadOfWebView() {
+        Robolectric.buildActivity(PreviewActivity::class.java).setup().use { controller ->
+            val activity = controller.get()
+            val store = ReflectionHelpers.getField<SessionStore>(activity, "store")
+            store.update(SavedSession(origin = "https://karaoke.example"))
+            ReflectionHelpers.callInstanceMethod<Unit>(activity, "connect")
+            val root = activity.window.decorView
+            measure(root, 320, 800)
+            assertNull(ReflectionHelpers.getField<android.webkit.WebView?>(activity, "webView"))
+            val buttons = descendants(root).filterIsInstance<MaterialButton>().toList()
+            assertTrue(buttons.any { it.text == "Sign in with passkey" && it.isShown })
+            assertTrue(buttons.any { it.text == "Open party link" })
+            assertNull(store.current.pendingLogin)
+            assertEquals("", store.current.token)
+        }
+    }
+
+    @Test fun pendingBrowserSignInSurvivesBackgroundButCancelRemovesIt() {
+        Robolectric.buildActivity(PreviewActivity::class.java).setup().use { controller ->
+            val activity = controller.get()
+            val store = ReflectionHelpers.getField<SessionStore>(activity, "store")
+            val pending = BrowserAuth.begin("https://karaoke.example")
+            store.update(SavedSession(origin = pending.origin, pendingLogin = pending))
+            ReflectionHelpers.callInstanceMethod<Unit>(activity, "connect")
+            controller.pause().stop().start().resume()
+            assertEquals(pending, store.current.pendingLogin)
+            val cancel = descendants(activity.window.decorView).filterIsInstance<MaterialButton>()
+                .single { it.text == "Cancel sign-in" }
+            cancel.performClick()
+            assertNull(store.current.pendingLogin)
+            assertEquals("", store.current.token)
+        }
+    }
+
+    @Test fun invalidAndUnsolicitedCallbacksCannotSignInOrConsumeValidPendingLogin() {
+        Robolectric.buildActivity(PreviewActivity::class.java).setup().use { controller ->
+            val activity = controller.get()
+            val store = ReflectionHelpers.getField<SessionStore>(activity, "store")
+            val pending = BrowserAuth.begin("https://karaoke.example")
+            store.update(SavedSession(origin = pending.origin, pendingLogin = pending))
+            val invalid = Intent(Intent.ACTION_VIEW, Uri.parse(
+                "${BrowserAuth.REDIRECT_URI}?code=${"a".repeat(43)}&state=${"b".repeat(43)}"))
+            controller.newIntent(invalid)
+            assertEquals(pending, store.current.pendingLogin)
+            assertNull(activity.intent.data)
+            assertEquals("", store.current.token)
+            store.update(store.current.signedOut())
+            controller.newIntent(Intent(Intent.ACTION_VIEW, Uri.parse(
+                "${BrowserAuth.REDIRECT_URI}?code=${"a".repeat(43)}&state=${pending.state}")))
+            assertNull(store.current.pendingLogin)
+            assertEquals("", store.current.token)
+        }
+    }
+
+    @Test fun expiredPendingLoginReturnsToFreshSignInWithoutARequest() {
+        Robolectric.buildActivity(PreviewActivity::class.java).setup().use { controller ->
+            val activity = controller.get()
+            val store = ReflectionHelpers.getField<SessionStore>(activity, "store")
+            val pending = BrowserAuth.begin("https://karaoke.example", System.currentTimeMillis() - BrowserAuth.LOGIN_LIFETIME_MS - 1)
+            store.update(SavedSession(origin = pending.origin, pendingLogin = pending))
+            ReflectionHelpers.callInstanceMethod<Unit>(activity, "connect")
+            assertNull(store.current.pendingLogin)
+            assertTrue(descendants(activity.window.decorView).filterIsInstance<MaterialButton>().any { it.text == "Sign in with passkey" })
+        }
+    }
+
+    @Test fun accountManagementOpensOnlyTheWebsiteWithoutAppCredentials() {
+        Robolectric.buildActivity(PreviewActivity::class.java).setup().use { controller ->
+            val activity = controller.get()
+            val store = ReflectionHelpers.getField<SessionStore>(activity, "store")
+            val saved = SavedSession(origin = "https://karaoke.example", token = "private-session", level = "member", username = "Alex")
+            store.update(saved)
+            settingsButton(activity).performClick()
+            val dialog = ShadowDialog.getLatestDialog()
+            descendants(dialog.window!!.decorView).filterIsInstance<MaterialButton>()
+                .single { it.text == "Account and passkeys" }.performClick()
+            val intent = shadowOf(activity).nextStartedActivity
+            assertEquals(Intent.ACTION_VIEW, intent.action)
+            assertEquals("https://karaoke.example/account", intent.dataString)
+            assertFalse(intent.toUri(0).contains(saved.token))
+            assertEquals(saved, store.current)
         }
     }
 

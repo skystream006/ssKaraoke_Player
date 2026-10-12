@@ -51,6 +51,7 @@ import android.widget.Toast
 import androidx.activity.addCallback
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.widget.AppCompatImageButton
+import androidx.browser.customtabs.CustomTabsIntent
 import androidx.core.content.FileProvider
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
@@ -59,7 +60,6 @@ import androidx.core.view.WindowInsetsControllerCompat
 import androidx.core.view.isVisible
 import androidx.lifecycle.lifecycleScope
 import androidx.webkit.ScriptHandler
-import androidx.webkit.WebSettingsCompat
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 import com.google.android.material.appbar.MaterialToolbar
@@ -93,6 +93,8 @@ open class MainActivity : AppCompatActivity() {
     private var updateJob: Job? = null
     private var settingsDialog: Dialog? = null
     private var signOutJob: Job? = null
+    private var browserLoginJob: Job? = null
+    private var browserLoginGeneration = 0
     private var connectionPaused = false
     private var isForeground = false
     private var startupCheckDone = false
@@ -131,7 +133,9 @@ open class MainActivity : AppCompatActivity() {
                 else -> finish()
             }
         }
-        if (store.current.origin.isEmpty()) showServerSetup() else connect()
+        if (!receiveBrowserCallback(intent)) {
+            if (store.current.origin.isEmpty()) showServerSetup() else connect()
+        }
         if (store.recoveryNeeded) toast("Saved sign-in could not be unlocked. Please connect and sign in again.")
         receiveSharedLink(intent)
     }
@@ -213,8 +217,13 @@ open class MainActivity : AppCompatActivity() {
     }
 
     private fun connect() {
-        if (store.current.origin.isEmpty() || signOutJob?.isActive == true) return
+        if (store.current.origin.isEmpty() || signOutJob?.isActive == true || browserLoginJob?.isActive == true) return
         connectionJob?.cancel()
+        if (store.current.token.isEmpty() &&
+            (store.current.pendingLogin != null || !store.current.route.startsWith("/join/invite#invite="))) {
+            showSignIn()
+            return
+        }
         if (webView == null) {
             val form = formPage()
             form.addView(ProgressBar(this).apply { indeterminateTintList = ColorStateList.valueOf(primary) },
@@ -235,7 +244,7 @@ open class MainActivity : AppCompatActivity() {
                 if (store.current.origin != saved.origin || store.current.token != saved.token) return@launch
                 store.update(store.current.signedOut().copy(
                     route = store.current.route.takeIf { it.startsWith("/join/") } ?: "/"))
-                showWebView()
+                if (store.current.route.startsWith("/join/invite#invite=")) showWebView() else showSignIn()
                 toast(expired.message.orEmpty())
             } catch (failure: Exception) {
                 if (webView == null) showError(failure.message ?: "Cannot reach the server.") { connect() }
@@ -246,8 +255,132 @@ open class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun showSignIn(message: String = "") {
+        disposeWebView()
+        pageProgress.isVisible = false
+        val pending = store.current.pendingLogin
+        if (pending != null && (pending.origin != store.current.origin ||
+                System.currentTimeMillis() !in pending.createdAt..(pending.createdAt + BrowserAuth.LOGIN_LIFETIME_MS))) {
+            cancelBrowserLogin()
+        }
+        val waiting = store.current.pendingLogin != null
+        val form = formPage()
+        form.addView(text(if (waiting) "Finish sign-in in your browser" else "Sign in to karaoke", 24f, true))
+        form.addView(text(store.current.origin, 15f, secondary = true), rowParams(12))
+        form.addView(text(message.ifEmpty {
+            if (waiting) "Complete the passkey prompt and choose Return to app. Closing the browser does not sign you in."
+            else "Use your website passkey in your browser. You can also create an account there; approval is controlled by the server."
+        }, 16f), rowParams(16))
+        form.addView(button(if (waiting) "Cancel sign-in" else "Sign in with passkey") {
+            if (waiting) { cancelBrowserLogin(); showSignIn() } else beginBrowserLogin()
+        }, rowParams(20))
+        form.addView(button("Open party link", true) { promptJoinLink() }, rowParams(12))
+        form.addView(text("Requires a server with browser app sign-in support (/app-login).", 13f, secondary = true), rowParams(16))
+    }
+
+    private fun beginBrowserLogin() {
+        if (store.current.token.isNotEmpty() || signOutJob?.isActive == true || browserLoginJob?.isActive == true) return
+        connectionJob?.cancel()
+        connectionPaused = false
+        disposeWebView()
+        try {
+            val pending = BrowserAuth.begin(store.current.origin)
+            store.update(store.current.copy(pendingLogin = pending))
+            store.flush()
+            check(!store.writeFailed)
+            showSignIn()
+            CustomTabsIntent.Builder().build().launchUrl(this, Uri.parse(BrowserAuth.loginUrl(pending)))
+        } catch (_: Exception) {
+            cancelBrowserLogin()
+            showSignIn("Could not start sign-in. Use an HTTPS hostname, install a passkey-capable browser, and ensure Android can securely save the pending sign-in.")
+        }
+    }
+
+    private fun cancelBrowserLogin() {
+        browserLoginGeneration++
+        browserLoginJob?.cancel()
+        browserLoginJob = null
+        store.update(store.current.copy(pendingLogin = null))
+        store.flush()
+    }
+
+    private fun receiveBrowserCallback(incoming: Intent?): Boolean {
+        if (incoming?.action != Intent.ACTION_VIEW || incoming.data?.scheme != "com.sskaraoke.player") return false
+        val callback = incoming.dataString.orEmpty()
+        setIntent(Intent(this, MainActivity::class.java))
+        val pending = store.current.pendingLogin
+        val authorization = try {
+            require(store.current.token.isEmpty() && pending?.origin == store.current.origin)
+            BrowserAuth.acceptCallback(callback, pending)
+        } catch (_: Exception) {
+            toast("Invalid or expired sign-in return. Use the sign-in started on this device.")
+            if (store.current.origin.isEmpty()) showServerSetup() else connect()
+            return true
+        }
+        connectionJob?.cancel()
+        connectionPaused = false
+        settingsDialog?.dismiss()
+        disposeWebView()
+        cancelBrowserLogin()
+        if (store.writeFailed) {
+            showSignIn("Cannot securely finish sign-in. Please retry after device storage is available.")
+            return true
+        }
+        val generation = browserLoginGeneration
+        formPage().addView(text("Completing sign-in...", 22f, true))
+        pageProgress.isVisible = true
+        browserLoginJob = lifecycleScope.launch {
+            try {
+                val session = sessionClient.exchange(authorization)
+                if (generation != browserLoginGeneration || store.current.origin != authorization.origin ||
+                    store.current.token.isNotEmpty()) return@launch
+                store.update(session.copy(theme = store.current.theme, route = store.current.route))
+                store.flush()
+                if (store.writeFailed) toast("Signed in for this launch, but Android could not securely save the session.")
+                browserLoginJob = null
+                connect()
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                if (generation == browserLoginGeneration) {
+                    showSignIn("Sign-in could not be completed. Start a new sign-in; the server must support /app-login and /api/auth/app/token.")
+                }
+            } finally {
+                if (generation == browserLoginGeneration) {
+                    browserLoginJob = null
+                    pageProgress.isVisible = false
+                }
+            }
+        }
+        return true
+    }
+
+    private fun openBrowserAccount() {
+        val server = ServerAddress.parse(store.current.origin)
+        if (!server.encrypted) {
+            toast("Account and passkey management requires HTTPS.")
+            return
+        }
+        try { CustomTabsIntent.Builder().build().launchUrl(this, Uri.parse(server.origin + "/account")) }
+        catch (_: ActivityNotFoundException) { toast("Install a passkey-capable browser to manage your account.") }
+    }
+
+    private fun showBrowserAccount() {
+        disposeWebView()
+        store.update(store.current.copy(route = "/", view = "{}"))
+        val form = formPage()
+        form.addView(text("Account and passkeys", 24f, true))
+        form.addView(text("Manage passkeys in your browser using the website's HTTPS origin. You may need to sign in separately there.", 16f), rowParams(16))
+        form.addView(button("Open account in browser") { openBrowserAccount() }, rowParams(20))
+        form.addView(button("Home", true) { connect() }, rowParams(12))
+    }
+
     @SuppressLint("SetJavaScriptEnabled")
     private fun showWebView() {
+        if (store.current.route.trimEnd('/') == "/account") {
+            showBrowserAccount()
+            return
+        }
         if (!WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT) ||
             !WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) {
             showError("Update Android System WebView or Chrome to use secure session restoration.") {
@@ -273,11 +406,6 @@ open class MainActivity : AppCompatActivity() {
             setSupportMultipleWindows(false)
             userAgentString = "$userAgentString ssKaraoke-Player/${BuildConfig.VERSION_NAME}"
         }
-        if (WebViewFeature.isFeatureSupported(WebViewFeature.WEB_AUTHENTICATION)) {
-            WebSettingsCompat.setWebAuthenticationSupport(browser.settings, WebSettingsCompat.WEB_AUTHENTICATION_SUPPORT_FOR_APP)
-        } else {
-            toast("Passkeys are unavailable. Update Android System WebView and your credential provider, or use a host invitation.")
-        }
         CookieManager.getInstance().setAcceptThirdPartyCookies(browser, true)
         WebViewCompat.addWebMessageListener(browser, "KaraokeHost", setOf(server.origin)) { view, message, source, mainFrame, _ ->
             if (view === webView && mainFrame && server.owns(source.toString())) {
@@ -292,6 +420,10 @@ open class MainActivity : AppCompatActivity() {
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
                 if (!request.isForMainFrame) return request.url.scheme in setOf("file", "content", "intent")
                 if (server.owns(request.url.toString())) {
+                    if (request.url.path?.trimEnd('/') == "/account") {
+                        showBrowserAccount()
+                        return true
+                    }
                     installDocumentScript(view)
                     return false
                 }
@@ -372,12 +504,21 @@ open class MainActivity : AppCompatActivity() {
                 route = store.current.route.takeIf { it.startsWith("/join/") } ?: "/"))
             "ready" -> webView?.evaluateJavascript("window.KaraokeAndroid?.applyTheme(${JSONObject.quote(store.current.theme)})", null)
             "haptic" -> webView?.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+            "signin" -> if (store.current.token.isEmpty()) showSignIn()
+            "account" -> showBrowserAccount()
         }
     }
 
     private fun navigate(route: String) {
         val server = ServerAddress.parse(store.current.origin)
+        if (server.safeRoute(route).trimEnd('/') == "/account") { openBrowserAccount(); return }
+        if (browserLoginJob?.isActive == true) return
+        if (store.current.pendingLogin != null) cancelBrowserLogin()
         store.update(store.current.copy(route = server.safeRoute(route), view = "{}"))
+        if (store.current.token.isEmpty() && !store.current.route.startsWith("/join/invite#invite=")) {
+            showSignIn()
+            return
+        }
         webView?.let {
             installDocumentScript(it)
             it.loadUrl(server.origin + store.current.route)
@@ -488,7 +629,7 @@ open class MainActivity : AppCompatActivity() {
             actions.addView(button("Home", true) { dialog.dismiss(); navigate("/") })
             actions.addView(button("Refresh", true) { dialog.dismiss(); refreshPage() })
             if (store.current.token.isNotEmpty() && store.current.level in setOf("member", "admin")) {
-                actions.addView(button("Account and passkeys", true) { dialog.dismiss(); navigate("/account") })
+                actions.addView(button("Account and passkeys", true) { dialog.dismiss(); openBrowserAccount() })
             }
             if (store.current.token.isNotEmpty()) {
                 actions.addView(button("Switch user", true) {
@@ -661,7 +802,7 @@ open class MainActivity : AppCompatActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        receiveSharedLink(intent)
+        if (!receiveBrowserCallback(intent)) receiveSharedLink(intent)
     }
 
     private fun receiveSharedLink(incoming: Intent?) {
@@ -673,6 +814,7 @@ open class MainActivity : AppCompatActivity() {
 
     private fun signOut(changeServer: Boolean = false) {
         if (signOutJob?.isActive == true) return
+        cancelBrowserLogin()
         connectionJob?.cancel()
         connectionJob = null
         connectionPaused = false
@@ -697,6 +839,7 @@ open class MainActivity : AppCompatActivity() {
     }
 
     private fun clearSession(replacement: SavedSession) {
+        cancelBrowserLogin()
         connectionPaused = false
         connectionJob?.cancel()
         sessionClient.cancel()
@@ -762,6 +905,7 @@ open class MainActivity : AppCompatActivity() {
             connectionPaused = false
             connect()
         }
+        if (store.current.pendingLogin != null && browserLoginJob?.isActive != true) showSignIn()
         if (!startupCheckDone && automaticUpdateChecks()) {
             startupCheckDone = true
             checkForUpdates(true)
@@ -776,6 +920,11 @@ open class MainActivity : AppCompatActivity() {
 
     override fun onStop() {
         isForeground = false
+        if (browserLoginJob?.isActive == true) {
+            cancelBrowserLogin()
+            sessionClient.cancel()
+            showSignIn("Sign-in was interrupted. Start a new sign-in; the previous code will not be retried.")
+        }
         webView?.evaluateJavascript("window.KaraokeAndroid?.snapshot();document.querySelectorAll('iframe[src*=\"youtube.com\"]').forEach(frame=>frame.contentWindow.postMessage(JSON.stringify({event:'command',func:'pauseVideo',args:[]}),'https://www.youtube.com'));", null)
         webView?.onPause()
         webView?.pauseTimers()
