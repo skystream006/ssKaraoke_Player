@@ -8,7 +8,9 @@ import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.InsetDrawable
 import android.view.View
 import android.view.ViewGroup
+import android.widget.GridLayout
 import android.widget.HorizontalScrollView
+import android.widget.LinearLayout
 import android.widget.RadioButton
 import android.widget.RadioGroup
 import android.widget.TextView
@@ -103,7 +105,7 @@ class NativeUiTest {
             val update = descendants(root).filterIsInstance<MaterialButton>().single { it.text == "Check for updates" }
             assertNotNull(update.background)
             assertTrue(update.isEnabled)
-            assertTrue(update.width > 200)
+            assertUpdateRow(update)
             assertTrue(update.height >= 48)
             assertFalse(descendants(root).filterIsInstance<MaterialButton>().any { it.text == "Home" })
             assertFalse(descendants(root).filterIsInstance<MaterialButton>().any { it.text == "Switch user" })
@@ -120,6 +122,60 @@ class NativeUiTest {
             assertTrue(ocean.isChecked)
             assertEquals(1, themes.count { it.isChecked })
             dialog.dismiss()
+        }
+    }
+
+    @Test fun serverActionsUseThreeColumnsWithoutClippingLabels() {
+        for (fontScale in listOf(1f, 1.5f)) {
+            RuntimeEnvironment.setFontScale(fontScale)
+            try {
+                for (level in listOf("", "member", "admin")) {
+                    Robolectric.buildActivity(PreviewActivity::class.java).setup().use { controller ->
+                        val activity = controller.get()
+                        val store = ReflectionHelpers.getField<SessionStore>(activity, "store")
+                        store.update(SavedSession(origin = "https://karaoke.example",
+                            token = if (level.isEmpty()) "" else "valid", level = level))
+                        settingsButton(activity).performClick()
+                        val dialog = ShadowDialog.getLatestDialog()
+                        val root = dialog.window!!.decorView
+                        val grid = descendants(root).filterIsInstance<GridLayout>().single()
+                        val buttons = (0 until grid.childCount).map { grid.getChildAt(it) as MaterialButton }
+                        val expected = mutableListOf("Home", "Refresh")
+                        if (level.isNotEmpty()) expected.add("Switch user")
+                        expected.add("Open party link")
+                        if (level == "admin") expected.add("Server administration")
+                        expected.addAll(listOf("Open in browser", "Change server", "Sign out"))
+                        assertEquals(expected, buttons.map { it.text.toString() })
+                        assertEquals(3, grid.columnCount)
+                        for (width in listOf(320, 800)) {
+                            measure(root, width, 800)
+                            assertTrue(grid.width <= width - 48)
+                            buttons.forEach {
+                                assertTrue(it.width >= 48 && it.height >= 48)
+                                assertTrue(it.left >= 0 && it.right <= grid.width)
+                                assertTextFits(it)
+                                assertEquals(it.text.length, it.layout.getLineEnd(it.layout.lineCount - 1))
+                                assertEquals(0, it.layout.getEllipsisCount(it.layout.lineCount - 1))
+                            }
+                            val rows = buttons.chunked(3)
+                            rows.forEach { row ->
+                                assertEquals(1, row.map { it.top }.distinct().size)
+                                assertEquals(1, row.map { it.bottom }.distinct().size)
+                                assertTrue(row.zipWithNext().all { (first, second) -> first.right < second.left })
+                            }
+                            rows.zipWithNext().forEach { (first, second) ->
+                                assertTrue(first.first().bottom < second.first().top)
+                                second.forEachIndexed { index, button ->
+                                    assertEquals(first[index].left, button.left)
+                                    assertEquals(first[index].right, button.right)
+                                }
+                            }
+                        }
+                        dialog.dismiss()
+                        store.update(SavedSession())
+                    }
+                }
+            } finally { RuntimeEnvironment.setFontScale(1f) }
         }
     }
 
@@ -141,7 +197,7 @@ class NativeUiTest {
                     measure(root, 320, 800)
                     val home = descendants(root).filterIsInstance<MaterialButton>().single { it.text == "Home" }
                     assertTrue(home.isEnabled)
-                    assertTrue(home.width > 200 && home.height >= 48)
+                    assertTrue(home.width >= 48 && home.height >= 48)
                     assertTextFits(home)
                     home.performClick()
                     assertFalse(dialog.isShowing)
@@ -185,7 +241,7 @@ class NativeUiTest {
                 val root = dialog.window!!.decorView
                 measure(root, 320, 800)
                 val update = descendants(root).filterIsInstance<MaterialButton>().single { it.text == "Check for updates" }
-                assertTextFits(update)
+                assertUpdateRow(update)
                 dialog.dismiss()
             }
         } finally { RuntimeEnvironment.setFontScale(1f) }
@@ -249,6 +305,21 @@ class NativeUiTest {
 
     private fun settingsButton(activity: MainActivity) =
         descendants(activity.window.decorView).filterIsInstance<AppCompatImageButton>().single { it.contentDescription == "App settings" }
+
+    private fun assertUpdateRow(update: MaterialButton) {
+        val row = update.parent as LinearLayout
+        assertEquals(LinearLayout.HORIZONTAL, row.orientation)
+        assertEquals(2, row.childCount)
+        val status = row.getChildAt(0) as TextView
+        assertEquals("Installed v${BuildConfig.VERSION_NAME}", status.text.toString())
+        assertSame(update, row.getChildAt(1))
+        assertTrue(status.width > 0)
+        assertTrue(status.right < update.left)
+        assertEquals(row.width, update.right)
+        assertTrue(status.top < update.bottom && update.top < status.bottom)
+        assertTextFits(status)
+        assertTextFits(update)
+    }
 
     private fun assertTextFits(view: TextView) {
         val layout = view.layout
