@@ -1,0 +1,53 @@
+name: Cleanup Releases
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 3 * * *'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: cleanup-releases
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete all but the five newest releases and their tags
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          # Include drafts and prereleases; use creation time for unpublished drafts.
+          releases_to_delete=$(gh api --paginate --slurp "repos/${GH_REPO}/releases?per_page=100" \
+            | jq -r 'flatten | sort_by(.published_at // .created_at, .id) | reverse
+              | . as $releases | .[5:][] | .tag_name as $tag
+              | [.id, $tag, ($releases[:5] | any(.tag_name == $tag))] | @tsv')
+
+          if [ -z "$releases_to_delete" ]; then
+            echo "Five or fewer releases found; nothing to delete."
+            exit 0
+          fi
+
+          # Delete by ID so a draft cannot resolve to another release sharing its tag.
+          while IFS=$'\t' read -r release_id tag keep_tag; do
+            gh api --method DELETE "repos/${GH_REPO}/releases/${release_id}"
+            echo "Deleted release ${release_id}."
+
+            if [ "$keep_tag" = true ]; then
+              echo "Keeping tag ${tag}, which is used by a retained release."
+              continue
+            fi
+
+            # Drafts may not have a Git tag yet; match exactly, not just by prefix.
+            encoded_tag=$(jq -rn --arg tag "$tag" '$tag | @uri')
+            matching_refs=$(gh api "repos/${GH_REPO}/git/matching-refs/tags/${encoded_tag}")
+            if jq -e --arg ref "refs/tags/${tag}" 'any(.[]; .ref == $ref)' <<< "$matching_refs" >/dev/null; then
+              gh api --method DELETE "repos/${GH_REPO}/git/refs/tags/${encoded_tag}"
+              echo "Deleted tag ${tag}."
+            fi
+          done <<< "$releases_to_delete"
