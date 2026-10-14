@@ -22,7 +22,7 @@
         const token = session.getItem("authToken") || "";
         const level = session.getItem("authLevel") || "none";
         const username = (local.getItem("defaultUsername") || "").trim();
-        const valid = token.length > 0 && token.length <= 8192 && ["member", "admin", "guest"].includes(level);
+        const valid = token.length > 0 && token.length <= 8192 && ["member", "admin", "hostscreen", "guest"].includes(level);
         return {
             token: valid ? token : "",
             level: valid ? level : "none",
@@ -35,7 +35,7 @@
 
     function restoreSession(session, local, saved) {
         for (const key of ["authToken", "authLevel", "usernameRequired", "memberId", "memberName", "memberRole"]) session.removeItem(key);
-        if (!saved || typeof saved.token !== "string" || !saved.token || saved.token.length > 8192 || !["member", "admin", "guest"].includes(saved.level)) return;
+        if (!saved || typeof saved.token !== "string" || !saved.token || saved.token.length > 8192 || !["member", "admin", "hostscreen", "guest"].includes(saved.level)) return;
         session.setItem("authToken", saved.token);
         session.setItem("authLevel", saved.level);
         for (const key of ["memberId", "memberName", "memberRole"]) {

@@ -7,6 +7,7 @@ import org.json.JSONObject
 import org.junit.Assert.*
 import org.junit.Test
 import java.io.IOException
+import java.time.Instant
 
 class SessionTest {
     @Test fun serverAddressesHaveExplicitOriginBoundaries() {
@@ -39,7 +40,7 @@ class SessionTest {
     }
 
     @Test fun accountAndGuestSessionsRoundTripAndSignOutClearsIdentity() {
-        for (level in SavedSession.levels) {
+        for (level in listOf("member", "admin", "hostscreen", "guest")) {
             val saved = SavedSession(origin = "https://karaoke.example", token = "valid", level = level,
                 username = "Alex", memberId = "member-1", memberName = "Alex",
                 memberRole = "organizer", route = "/organizer/party-1/member-1", theme = "forest", view = "{\"tab\":\"search\"}")
@@ -48,6 +49,95 @@ class SessionTest {
             assertEquals(SavedSession(origin = saved.origin, theme = saved.theme), saved.signedOut())
         }
     }
+
+    @Test fun hostScreenLoginUsesOnlyTheExactKeyAndPersistsOnlyTheRestrictedSession() = runBlocking {
+        MockWebServer().use { server ->
+            server.enqueue(MockResponse().setBody(hostScreenResponse().toString()))
+            val key = " fixture-host-key "
+            val saved = SessionClient().loginHostScreen(server.url("/").toString(), key)
+            val request = server.takeRequest()
+            assertEquals("/api/auth/hostscreen/login", request.path)
+            assertEquals("POST", request.method)
+            assertNull(request.getHeader("Authorization"))
+            val body = JSONObject(request.body.readUtf8())
+            assertEquals(setOf("key"), body.keys().asSequence().toSet())
+            assertEquals(key, body.getString("key"))
+            assertEquals("hostscreen", saved.level)
+            assertEquals("HOSTSCREEN", saved.username)
+            assertEquals("/join", saved.route)
+            assertEquals("", saved.memberId)
+            assertEquals("", saved.memberRole)
+            assertNull(saved.pendingLogin)
+            assertFalse(saved.toJson().toString().contains(key))
+            assertFalse(saved.seed().has("key"))
+            assertEquals(saved, SavedSession.fromJson(saved.toJson()))
+        }
+    }
+
+    @Test fun hostScreenErrorsAreSanitizedAndNeverRedirectOrRetry() = runBlocking {
+        for (status in listOf(302, 307, 401, 403, 404, 408, 429, 500, 503)) {
+            MockWebServer().use { server ->
+                val key = "fixture-private-host-key"
+                server.enqueue(MockResponse().setResponseCode(status).setBody("""{"error":"$key"}""")
+                    .setHeader("Location", "/redirect").setHeader("Retry-After", "0"))
+                server.enqueue(MockResponse().setBody(hostScreenResponse().toString()))
+                try {
+                    SessionClient().loginHostScreen(server.url("/").toString(), key)
+                    fail("Expected HOSTSCREEN sign-in failure")
+                } catch (failure: HostScreenSignInException) {
+                    assertFalse(failure.stackTraceToString().contains(key))
+                    assertEquals(1, server.requestCount)
+                }
+            }
+        }
+    }
+
+    @Test fun hostScreenRejectsMalformedOrWrongRoleSessions() = runBlocking {
+        val invalid = listOf(
+            hostScreenResponse().put("level", "admin"),
+            hostScreenResponse().put("level", "member"),
+            hostScreenResponse().put("level", "guest"),
+            hostScreenResponse().put("token", ""),
+            hostScreenResponse().put("token", "x".repeat(8193)),
+            hostScreenResponse().put("user", JSONObject.NULL),
+            hostScreenResponse().put("user", JSONObject().put("name", "")),
+            hostScreenResponse().put("expiresAt", "2000-01-01T00:00:00Z"),
+            hostScreenResponse().put("expiresAt", JSONObject.NULL),
+            hostScreenResponse().put("padding", "x".repeat(64 * 1024))
+        )
+        for (body in invalid) MockWebServer().use { server ->
+            server.enqueue(MockResponse().setBody(body.toString()))
+            try {
+                SessionClient().loginHostScreen(server.url("/").toString(), "fixture-host-key")
+                fail("Expected invalid session rejection")
+            } catch (_: HostScreenSignInException) { assertEquals(1, server.requestCount) }
+        }
+    }
+
+    @Test fun hostScreenResumesAndRevokesLikeOtherAccountSessions() = runBlocking {
+        MockWebServer().use { server ->
+            val body = hostScreenResponse().apply { remove("token") }
+            server.enqueue(MockResponse().setBody(body.toString()))
+            server.enqueue(MockResponse().setResponseCode(204))
+            val saved = SavedSession(origin = server.url("/").toString(), token = "hostscreen-session", level = "hostscreen",
+                username = "HOSTSCREEN", memberId = "screen-member", memberName = "HOSTSCREEN", memberRole = "organizer",
+                route = "/organizer/party-1/screen-member")
+            val client = SessionClient()
+            assertEquals(saved, client.resume(saved))
+            client.logout(saved)
+            for (path in listOf("/api/auth/me", "/api/auth/logout")) {
+                val request = server.takeRequest()
+                assertEquals(path, request.path)
+                assertEquals(listOf("Bearer", saved.token).joinToString(" "), request.getHeader("Authorization"))
+            }
+            assertEquals("", saved.signedOut().token)
+        }
+    }
+
+    private fun hostScreenResponse() = JSONObject().put("token", "hostscreen-session").put("level", "hostscreen")
+        .put("user", JSONObject().put("name", "HOSTSCREEN").put("role", "hostscreen"))
+        .put("partyId", JSONObject.NULL).put("memberId", JSONObject.NULL)
+        .put("expiresAt", Instant.now().plusSeconds(3600).toString())
 
     @Test fun invitationFragmentsArePreservedOnlyForCanonicalSameOriginLinks() {
         val token = "a".repeat(41) + "_-"

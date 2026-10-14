@@ -4,6 +4,7 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Looper
 import android.os.Build
+import android.text.InputType
 import android.graphics.Color
 import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.GradientDrawable
@@ -23,8 +24,10 @@ import androidx.core.view.WindowInsetsCompat
 import com.google.android.material.appbar.MaterialToolbar
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.textfield.TextInputEditText
+import com.google.android.material.textfield.TextInputLayout
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
+import okhttp3.mockwebserver.SocketPolicy
 import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -37,6 +40,8 @@ import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 import org.robolectric.shadows.ShadowDialog
 import org.robolectric.util.ReflectionHelpers
+import java.time.Instant
+import java.util.concurrent.TimeUnit
 
 class PreviewActivity : MainActivity() {
     override fun automaticUpdateChecks() = false
@@ -138,9 +143,97 @@ class NativeUiTest {
             assertNull(ReflectionHelpers.getField<android.webkit.WebView?>(activity, "webView"))
             val buttons = descendants(root).filterIsInstance<MaterialButton>().toList()
             assertTrue(buttons.any { it.text == "Sign in with passkey" && it.isShown })
+            assertTrue(buttons.any { it.text == "Sign in as HOSTSCREEN" && it.isShown })
             assertTrue(buttons.any { it.text == "Open party link" })
             assertNull(store.current.pendingLogin)
             assertEquals("", store.current.token)
+        }
+    }
+
+    @Test fun hostScreenOptionCancelsPendingPasskeysAndKeepsTheKeyOutOfSavedState() {
+        Robolectric.buildActivity(PreviewActivity::class.java).setup().use { controller ->
+            val activity = controller.get()
+            val store = ReflectionHelpers.getField<SessionStore>(activity, "store")
+            store.update(SavedSession(origin = "https://karaoke.example", pendingLogin = BrowserAuth.begin("https://karaoke.example")))
+            ReflectionHelpers.callInstanceMethod<Unit>(activity, "connect")
+            descendants(activity.window.decorView).filterIsInstance<MaterialButton>()
+                .single { it.text == "Sign in as HOSTSCREEN" }.performClick()
+            val views = descendants(activity.window.decorView).toList()
+            val input = views.filterIsInstance<TextInputEditText>().single()
+            assertNull(store.current.pendingLogin)
+            assertNull(shadowOf(activity).nextStartedActivity)
+            assertFalse(input.isSaveEnabled)
+            assertEquals(View.IMPORTANT_FOR_AUTOFILL_NO, input.importantForAutofill)
+            assertEquals(InputType.TYPE_TEXT_VARIATION_PASSWORD, input.inputType and InputType.TYPE_MASK_VARIATION)
+            views.filterIsInstance<MaterialButton>().single { it.text == "Sign in" }.performClick()
+            assertEquals("Enter the HOSTSCREEN login key.", views.filterIsInstance<TextInputLayout>().single().error.toString())
+            input.setText("fixture-host-key")
+            assertFalse(store.current.toJson().toString().contains("fixture-host-key"))
+            views.filterIsInstance<MaterialButton>().single { it.text == "Back to sign-in options" }.performClick()
+            assertEquals("", input.text.toString())
+            assertTrue(descendants(activity.window.decorView).filterIsInstance<MaterialButton>().any { it.text == "Sign in with passkey" })
+        }
+    }
+
+    @Test fun hostScreenLoginSavesTheSessionAndOpensPartySelection() {
+        MockWebServer().use { server ->
+            server.enqueue(MockResponse().setBody(JSONObject().put("token", "hostscreen-session").put("level", "hostscreen")
+                .put("user", JSONObject().put("name", "HOSTSCREEN"))
+                .put("expiresAt", Instant.now().plusSeconds(3600).toString()).toString()))
+            server.enqueue(MockResponse().setBody("""{"level":"hostscreen","user":{"name":"HOSTSCREEN"}}"""))
+            Robolectric.buildActivity(PreviewActivity::class.java).setup().use { controller ->
+                val activity = controller.get()
+                val store = ReflectionHelpers.getField<SessionStore>(activity, "store")
+                store.update(SavedSession(origin = ServerAddress.parse(server.url("/").toString()).origin, theme = "forest"))
+                ReflectionHelpers.callInstanceMethod<Unit>(activity, "connect")
+                descendants(activity.window.decorView).filterIsInstance<MaterialButton>()
+                    .single { it.text == "Sign in as HOSTSCREEN" }.performClick()
+                val input = descendants(activity.window.decorView).filterIsInstance<TextInputEditText>().single()
+                input.setText("fixture-host-key")
+                descendants(activity.window.decorView).filterIsInstance<MaterialButton>()
+                    .single { it.text == "Sign in" }.performClick()
+                assertEquals("", input.text.toString())
+                assertEquals("/api/auth/hostscreen/login", server.takeRequest(5, TimeUnit.SECONDS)?.path)
+                val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
+                while (store.current.token.isEmpty() && System.nanoTime() < deadline) {
+                    shadowOf(Looper.getMainLooper()).idle()
+                    Thread.sleep(10)
+                }
+                assertEquals("hostscreen-session", store.current.token)
+                assertEquals("hostscreen", store.current.level)
+                assertEquals("HOSTSCREEN", store.current.username)
+                assertEquals("/join", store.current.route)
+                assertEquals("forest", store.current.theme)
+                assertNull(store.current.pendingLogin)
+                assertFalse(store.current.toJson().toString().contains("fixture-host-key"))
+                assertNull(shadowOf(activity).nextStartedActivity)
+            }
+        }
+    }
+
+    @Test fun backgroundingHostScreenLoginCancelsTheRequestWithoutSavingTheKey() {
+        MockWebServer().use { server ->
+            server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE))
+            Robolectric.buildActivity(PreviewActivity::class.java).setup().use { controller ->
+                val activity = controller.get()
+                val store = ReflectionHelpers.getField<SessionStore>(activity, "store")
+                store.update(SavedSession(origin = ServerAddress.parse(server.url("/").toString()).origin))
+                ReflectionHelpers.callInstanceMethod<Unit>(activity, "connect")
+                descendants(activity.window.decorView).filterIsInstance<MaterialButton>()
+                    .single { it.text == "Sign in as HOSTSCREEN" }.performClick()
+                val input = descendants(activity.window.decorView).filterIsInstance<TextInputEditText>().single()
+                input.setText("fixture-host-key")
+                descendants(activity.window.decorView).filterIsInstance<MaterialButton>()
+                    .single { it.text == "Sign in" }.performClick()
+                assertEquals("/api/auth/hostscreen/login", server.takeRequest(5, TimeUnit.SECONDS)?.path)
+                controller.pause().stop().start().resume()
+                shadowOf(Looper.getMainLooper()).idle()
+                assertEquals("", input.text.toString())
+                assertEquals("", store.current.token)
+                assertNull(store.current.pendingLogin)
+                assertTrue(descendants(activity.window.decorView).filterIsInstance<MaterialButton>().any { it.text == "Sign in as HOSTSCREEN" })
+                assertEquals(1, server.requestCount)
+            }
         }
     }
 
@@ -215,7 +308,7 @@ class NativeUiTest {
         for (fontScale in listOf(1f, 1.5f)) {
             RuntimeEnvironment.setFontScale(fontScale)
             try {
-                for (level in listOf("", "guest", "member", "admin")) {
+                for (level in listOf("", "guest", "member", "admin", "hostscreen")) {
                     Robolectric.buildActivity(PreviewActivity::class.java).setup().use { controller ->
                         val activity = controller.get()
                         val store = ReflectionHelpers.getField<SessionStore>(activity, "store")
