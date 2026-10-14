@@ -268,6 +268,28 @@ test.describe("hosted sign-in routing", () => {
 test.describe("fixture AuthContext contract", () => {
     test.skip(Boolean(process.env.KARAOKE_FRONTEND_BUILD), "Uses the fixture's AuthContext simulation, not real WebAuthn.");
 
+    test.describe("HOSTSCREEN session", () => {
+        test.use({ savedSession: {
+            ...seed, token: "hostscreen-session", level: "hostscreen", username: "HOSTSCREEN",
+            memberName: "HOSTSCREEN", memberRole: "organizer", route: `/organizer/${partyId}/${memberId}`
+        } });
+
+        test("keeps the restricted level and organizer route across WebView recreation", async ({ page, savedSession }) => {
+            expect(await checkpoint(page)).toMatchObject({
+                token: savedSession.token, level: "hostscreen", username: "HOSTSCREEN",
+                memberId, memberRole: "organizer", route: savedSession.route
+            });
+            await recreateWebView(page);
+            expect(await page.evaluate(() => sessionStorage.getItem("authLevel"))).toBe("hostscreen");
+            expect(await checkpoint(page)).toMatchObject({ token: savedSession.token, level: "hostscreen", route: savedSession.route });
+            expect(await authEvents(page)).toEqual([]);
+            await page.getByRole("button", { name: "Sign out", exact: true }).click();
+            await expect.poll(async () => (await checkpoint(page)).token).toBe("");
+            await recreateWebView(page);
+            expect(await page.evaluate(() => sessionStorage.getItem("authToken"))).toBeNull();
+        });
+    });
+
     test.describe("immediate persistence during view restoration", () => {
         test.use({ savedSession: signedOut, startupSession: passkeySessions.login });
 

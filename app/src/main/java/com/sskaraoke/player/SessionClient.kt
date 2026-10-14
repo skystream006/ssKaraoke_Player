@@ -36,6 +36,8 @@ internal suspend fun Call.awaitResponse(): Response = suspendCancellableCoroutin
 
 class SignInRequired(message: String) : IOException(message)
 
+class HostScreenSignInException(message: String) : IOException(message)
+
 @OptIn(ExperimentalCoroutinesApi::class)
 class BrowserSignInException(message: String) : IOException(message), CopyableThrowable<BrowserSignInException> {
     init {
@@ -54,6 +56,17 @@ class SessionClient(private val client: OkHttpClient = OkHttpClient.Builder()
         .authenticator(Authenticator.NONE).proxyAuthenticator(Authenticator.NONE)
         .callTimeout(20, TimeUnit.SECONDS).build()
 
+    private fun oneShotJsonBody(payload: JSONObject): RequestBody {
+        val bytes = payload.toString().toByteArray(Charsets.UTF_8)
+        return object : RequestBody() {
+            override fun contentType() = "application/json".toMediaType()
+            override fun contentLength() = bytes.size.toLong()
+            // Sign-in requests must not be replayed by HTTP follow-up attempts.
+            override fun isOneShot() = true
+            override fun writeTo(sink: BufferedSink) { sink.write(bytes) }
+        }
+    }
+
     suspend fun exchange(authorization: BrowserAuthorizationCode): SavedSession = withContext(Dispatchers.IO) {
         try {
             val origin = BrowserAuth.validatedOrigin(authorization.origin)
@@ -61,41 +74,11 @@ class SessionClient(private val client: OkHttpClient = OkHttpClient.Builder()
             BrowserAuth.challenge(authorization.verifier)
             val payload = JSONObject().put("code", authorization.code)
                 .put("code_verifier", authorization.verifier).put("redirect_uri", BrowserAuth.REDIRECT_URI)
-                .toString().toByteArray(Charsets.UTF_8)
-            val body = object : RequestBody() {
-                override fun contentType() = "application/json".toMediaType()
-                override fun contentLength() = payload.size.toLong()
-                // Authorization codes are single-use, including across HTTP follow-up attempts.
-                override fun isOneShot() = true
-                override fun writeTo(sink: BufferedSink) { sink.write(payload) }
-            }
             val request = Request.Builder().url(ServerAddress.parse(origin).api("auth/app/token"))
-                .header("Accept", "application/json").post(body).build()
+                .header("Accept", "application/json").post(oneShotJsonBody(payload)).build()
             exchangeClient.newCall(request).awaitResponse().use { response ->
                 require(response.isSuccessful)
-                val responseBody = response.body ?: throw IOException()
-                val source = responseBody.source()
-                require(responseBody.contentLength() <= 64 * 1024 && !source.request(64 * 1024L + 1))
-                val result = JSONObject(source.readUtf8())
-                val token = result.opt("token") as? String ?: throw IOException()
-                val level = result.opt("level") as? String ?: throw IOException()
-                val username = (result.optJSONObject("user")?.opt("name") as? String)?.trim() ?: throw IOException()
-                require(token.length in 1..8192 && token.all { it.code in 33..126 })
-                require(level in setOf("member", "admin"))
-                require(username.length in 1..60 && username.codePoints().noneMatch {
-                    Character.isISOControl(it) || it in 0xD800..0xDFFF || it == 0xFFFD
-                })
-                val expiresAt = when (val expiry = result.opt("expiresAt")) {
-                    is String -> {
-                        require(expiry.length <= 64)
-                        Instant.parse(expiry)
-                    }
-                    is Long -> Instant.ofEpochMilli(expiry)
-                    is Int -> Instant.ofEpochMilli(expiry.toLong())
-                    else -> throw IOException()
-                }
-                require(expiresAt.isAfter(Instant.now()))
-                SavedSession(origin = origin, token = token, level = level, username = username)
+                response.accountSession(origin, setOf("member", "admin"))
             }
         } catch (failure: CancellationException) {
             throw failure
@@ -104,13 +87,65 @@ class SessionClient(private val client: OkHttpClient = OkHttpClient.Builder()
         }
     }
 
+    suspend fun loginHostScreen(origin: String, key: String): SavedSession = withContext(Dispatchers.IO) {
+        var message = "HOSTSCREEN sign-in failed. Please try again."
+        try {
+            require(key.isNotBlank())
+            val server = ServerAddress.parse(origin)
+            val request = Request.Builder().url(server.api("auth/hostscreen/login"))
+                .header("Accept", "application/json")
+                .post(oneShotJsonBody(JSONObject().put("key", key))).build()
+            exchangeClient.newCall(request).awaitResponse().use { response ->
+                message = when (response.code) {
+                    401 -> "Invalid HOSTSCREEN login key."
+                    403 -> "The HOSTSCREEN account is unavailable."
+                    404, 503 -> "HOSTSCREEN login is not available. Ask the server administrator to enable it."
+                    429 -> "Too many sign-in attempts. Wait before trying again."
+                    else -> message
+                }
+                require(response.isSuccessful)
+                response.accountSession(server.origin, setOf("hostscreen")).copy(route = "/join")
+            }
+        } catch (failure: CancellationException) {
+            throw failure
+        } catch (_: Exception) {
+            throw HostScreenSignInException(message)
+        }
+    }
+
+    private fun Response.accountSession(origin: String, allowedLevels: Set<String>): SavedSession {
+        val responseBody = body ?: throw IOException()
+        val source = responseBody.source()
+        require(responseBody.contentLength() <= 64 * 1024 && !source.request(64 * 1024L + 1))
+        val result = JSONObject(source.readUtf8())
+        val token = result.opt("token") as? String ?: throw IOException()
+        val level = result.opt("level") as? String ?: throw IOException()
+        val username = (result.optJSONObject("user")?.opt("name") as? String)?.trim() ?: throw IOException()
+        require(token.length in 1..8192 && token.all { it.code in 33..126 })
+        require(level in allowedLevels)
+        require(username.length in 1..60 && username.codePoints().noneMatch {
+            Character.isISOControl(it) || it in 0xD800..0xDFFF || it == 0xFFFD
+        })
+        val expiresAt = when (val expiry = result.opt("expiresAt")) {
+            is String -> {
+                require(expiry.length <= 64)
+                Instant.parse(expiry)
+            }
+            is Long -> Instant.ofEpochMilli(expiry)
+            is Int -> Instant.ofEpochMilli(expiry.toLong())
+            else -> throw IOException()
+        }
+        require(expiresAt.isAfter(Instant.now()))
+        return SavedSession(origin = origin, token = token, level = level, username = username)
+    }
+
     suspend fun resume(saved: SavedSession): SavedSession = withContext(Dispatchers.IO) {
         if (saved.origin.isBlank() || saved.token.isBlank()) return@withContext saved
         val server = ServerAddress.parse(saved.origin)
         val request = Request.Builder().url(server.api("auth/me"))
             .header("Authorization", "Bearer" + " " + saved.token).build()
         client.newCall(request).awaitResponse().use { response ->
-            if (response.code == 401) throw SignInRequired("Your session ended. Sign in with a passkey or scan a current host invitation.")
+            if (response.code == 401) throw SignInRequired("Your session ended. Sign in with a passkey, a HOSTSCREEN key, or a current host invitation.")
             if (!response.isSuccessful) throw IOException("Server returned HTTP ${response.code}. Sign-in has been preserved.")
             val result = JSONObject(response.body?.string() ?: throw IOException("Empty sign-in response."))
             val level = result.optString("level")

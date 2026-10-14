@@ -44,7 +44,7 @@ data class SavedSession(
     fun signedOut(): SavedSession = SavedSession(origin = origin, theme = theme)
 
     companion object {
-        val levels = setOf("member", "admin", "guest")
+        val levels = setOf("member", "admin", "hostscreen", "guest")
         val themes = linkedMapOf(
             "neonPurple" to "Neon Purple", "ocean" to "Ocean", "forest" to "Forest",
             "sunset" to "Sunset", "midnightGold" to "Midnight Gold", "dark" to "Dark"

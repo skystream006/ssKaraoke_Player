@@ -93,8 +93,8 @@ open class MainActivity : AppCompatActivity() {
     private var updateJob: Job? = null
     private var settingsDialog: Dialog? = null
     private var signOutJob: Job? = null
-    private var browserLoginJob: Job? = null
-    private var browserLoginGeneration = 0
+    private var signInJob: Job? = null
+    private var signInGeneration = 0
     private var connectionPaused = false
     private var isForeground = false
     private var startupCheckDone = false
@@ -217,7 +217,7 @@ open class MainActivity : AppCompatActivity() {
     }
 
     private fun connect() {
-        if (store.current.origin.isEmpty() || signOutJob?.isActive == true || browserLoginJob?.isActive == true) return
+        if (store.current.origin.isEmpty() || signOutJob?.isActive == true || signInJob?.isActive == true) return
         connectionJob?.cancel()
         if (store.current.token.isEmpty() &&
             (store.current.pendingLogin != null || !store.current.route.startsWith("/join/invite#invite="))) {
@@ -261,7 +261,7 @@ open class MainActivity : AppCompatActivity() {
         val pending = store.current.pendingLogin
         if (pending != null && (pending.origin != store.current.origin ||
                 System.currentTimeMillis() !in pending.createdAt..(pending.createdAt + BrowserAuth.LOGIN_LIFETIME_MS))) {
-            cancelBrowserLogin()
+            cancelSignIn()
         }
         val waiting = store.current.pendingLogin != null
         val form = formPage()
@@ -272,14 +272,78 @@ open class MainActivity : AppCompatActivity() {
             else "Use your website passkey in your browser. You can also create an account there; approval is controlled by the server."
         }, 16f), rowParams(16))
         form.addView(button(if (waiting) "Cancel sign-in" else "Sign in with passkey") {
-            if (waiting) { cancelBrowserLogin(); showSignIn() } else beginBrowserLogin()
+            if (waiting) { cancelSignIn(); showSignIn() } else beginBrowserLogin()
         }, rowParams(20))
+        form.addView(button("Sign in as HOSTSCREEN", true) { cancelSignIn(); showHostScreenSignIn() }, rowParams(12))
         form.addView(button("Open party link", true) { promptJoinLink() }, rowParams(12))
-        form.addView(text("Requires a server with browser app sign-in support (/app-login).", 13f, secondary = true), rowParams(16))
+        form.addView(text("Passkeys require browser app sign-in support (/app-login). HOSTSCREEN uses the server's shared login key.", 13f, secondary = true), rowParams(16))
+    }
+
+    private fun showHostScreenSignIn(message: String = "") {
+        disposeWebView()
+        pageProgress.isVisible = false
+        val form = formPage()
+        form.addView(text("Sign in as HOSTSCREEN", 24f, true))
+        form.addView(text(store.current.origin, 15f, secondary = true), rowParams(12))
+        form.addView(text(message.ifEmpty {
+            "Enter the server's HOSTSCREEN login key to join an existing party as a playback screen. The key is not saved."
+        }, 16f), rowParams(16))
+        val (field, input) = inputField("HOSTSCREEN login key", type = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD)
+        input.isSaveEnabled = false
+        input.importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO
+        input.imeOptions = EditorInfo.IME_ACTION_GO
+        form.addView(field, rowParams(16))
+        val signIn = button("Sign in") {
+            val key = input.text.toString()
+            if (key.isBlank()) field.error = "Enter the HOSTSCREEN login key."
+            else {
+                input.text?.clear()
+                beginHostScreenLogin(key)
+            }
+        }
+        form.addView(signIn, rowParams(20))
+        input.setOnEditorActionListener { _, action, _ ->
+            if (action == EditorInfo.IME_ACTION_GO) { signIn.performClick(); true } else false
+        }
+        form.addView(button("Back to sign-in options", true) { input.text?.clear(); showSignIn() }, rowParams(12))
+    }
+
+    private fun beginHostScreenLogin(key: String) {
+        if (store.current.token.isNotEmpty() || signOutJob?.isActive == true || signInJob?.isActive == true) return
+        cancelSignIn()
+        connectionJob?.cancel()
+        connectionPaused = false
+        val origin = store.current.origin
+        val generation = signInGeneration
+        formPage().addView(text("Signing in as HOSTSCREEN...", 22f, true))
+        pageProgress.isVisible = true
+        signInJob = lifecycleScope.launch {
+            try {
+                val session = sessionClient.loginHostScreen(origin, key)
+                if (generation != signInGeneration || store.current.origin != origin || store.current.token.isNotEmpty()) return@launch
+                store.update(session.copy(theme = store.current.theme))
+                store.flush()
+                if (store.writeFailed) toast("Signed in for this launch, but Android could not securely save the session.")
+                signInJob = null
+                connect()
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                if (generation == signInGeneration) {
+                    showHostScreenSignIn(if (failure is HostScreenSignInException) failure.message.orEmpty()
+                        else "HOSTSCREEN sign-in could not be completed. Please try again.")
+                }
+            } finally {
+                if (generation == signInGeneration) {
+                    signInJob = null
+                    pageProgress.isVisible = false
+                }
+            }
+        }
     }
 
     private fun beginBrowserLogin() {
-        if (store.current.token.isNotEmpty() || signOutJob?.isActive == true || browserLoginJob?.isActive == true) return
+        if (store.current.token.isNotEmpty() || signOutJob?.isActive == true || signInJob?.isActive == true) return
         connectionJob?.cancel()
         connectionPaused = false
         disposeWebView()
@@ -291,15 +355,15 @@ open class MainActivity : AppCompatActivity() {
             showSignIn()
             CustomTabsIntent.Builder().build().launchUrl(this, Uri.parse(BrowserAuth.loginUrl(pending)))
         } catch (_: Exception) {
-            cancelBrowserLogin()
+            cancelSignIn()
             showSignIn("Could not start sign-in. Use an HTTPS hostname, install a passkey-capable browser, and ensure Android can securely save the pending sign-in.")
         }
     }
 
-    private fun cancelBrowserLogin() {
-        browserLoginGeneration++
-        browserLoginJob?.cancel()
-        browserLoginJob = null
+    private fun cancelSignIn() {
+        signInGeneration++
+        signInJob?.cancel()
+        signInJob = null
         store.update(store.current.copy(pendingLogin = null))
         store.flush()
     }
@@ -321,33 +385,33 @@ open class MainActivity : AppCompatActivity() {
         connectionPaused = false
         settingsDialog?.dismiss()
         disposeWebView()
-        cancelBrowserLogin()
+        cancelSignIn()
         if (store.writeFailed) {
             showSignIn("Cannot securely finish sign-in. Please retry after device storage is available.")
             return true
         }
-        val generation = browserLoginGeneration
+        val generation = signInGeneration
         formPage().addView(text("Completing sign-in...", 22f, true))
         pageProgress.isVisible = true
-        browserLoginJob = lifecycleScope.launch {
+        signInJob = lifecycleScope.launch {
             try {
                 val session = sessionClient.exchange(authorization)
-                if (generation != browserLoginGeneration || store.current.origin != authorization.origin ||
+                if (generation != signInGeneration || store.current.origin != authorization.origin ||
                     store.current.token.isNotEmpty()) return@launch
                 store.update(session.copy(theme = store.current.theme, route = store.current.route))
                 store.flush()
                 if (store.writeFailed) toast("Signed in for this launch, but Android could not securely save the session.")
-                browserLoginJob = null
+                signInJob = null
                 connect()
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (_: Exception) {
-                if (generation == browserLoginGeneration) {
+                if (generation == signInGeneration) {
                     showSignIn("Sign-in could not be completed. Start a new sign-in; the server must support /app-login and /api/auth/app/token.")
                 }
             } finally {
-                if (generation == browserLoginGeneration) {
-                    browserLoginJob = null
+                if (generation == signInGeneration) {
+                    signInJob = null
                     pageProgress.isVisible = false
                 }
             }
@@ -512,8 +576,8 @@ open class MainActivity : AppCompatActivity() {
     private fun navigate(route: String) {
         val server = ServerAddress.parse(store.current.origin)
         if (server.safeRoute(route).trimEnd('/') == "/account") { openBrowserAccount(); return }
-        if (browserLoginJob?.isActive == true) return
-        if (store.current.pendingLogin != null) cancelBrowserLogin()
+        if (signInJob?.isActive == true) return
+        if (store.current.pendingLogin != null) cancelSignIn()
         store.update(store.current.copy(route = server.safeRoute(route), view = "{}"))
         if (store.current.token.isEmpty() && !store.current.route.startsWith("/join/invite#invite=")) {
             showSignIn()
@@ -633,7 +697,7 @@ open class MainActivity : AppCompatActivity() {
             }
             if (store.current.token.isNotEmpty()) {
                 actions.addView(button("Switch user", true) {
-                    confirm("Switch user?", "Sign out and revoke this session and its host invitations, then sign in with another passkey or invitation?", "Switch user") {
+                    confirm("Switch user?", "Sign out and revoke this session and its host invitations, then sign in with a passkey, HOSTSCREEN key, or invitation?", "Switch user") {
                         dialog.dismiss(); signOut()
                     }
                 })
@@ -814,7 +878,7 @@ open class MainActivity : AppCompatActivity() {
 
     private fun signOut(changeServer: Boolean = false) {
         if (signOutJob?.isActive == true) return
-        cancelBrowserLogin()
+        cancelSignIn()
         connectionJob?.cancel()
         connectionJob = null
         connectionPaused = false
@@ -839,7 +903,7 @@ open class MainActivity : AppCompatActivity() {
     }
 
     private fun clearSession(replacement: SavedSession) {
-        cancelBrowserLogin()
+        cancelSignIn()
         connectionPaused = false
         connectionJob?.cancel()
         sessionClient.cancel()
@@ -905,7 +969,7 @@ open class MainActivity : AppCompatActivity() {
             connectionPaused = false
             connect()
         }
-        if (store.current.pendingLogin != null && browserLoginJob?.isActive != true) showSignIn()
+        if (store.current.pendingLogin != null && signInJob?.isActive != true) showSignIn()
         if (!startupCheckDone && automaticUpdateChecks()) {
             startupCheckDone = true
             checkForUpdates(true)
@@ -920,10 +984,10 @@ open class MainActivity : AppCompatActivity() {
 
     override fun onStop() {
         isForeground = false
-        if (browserLoginJob?.isActive == true) {
-            cancelBrowserLogin()
+        if (signInJob?.isActive == true) {
+            cancelSignIn()
             sessionClient.cancel()
-            showSignIn("Sign-in was interrupted. Start a new sign-in; the previous code will not be retried.")
+            showSignIn("Sign-in was interrupted. Start a new sign-in; the previous request will not be retried.")
         }
         webView?.evaluateJavascript("window.KaraokeAndroid?.snapshot();document.querySelectorAll('iframe[src*=\"youtube.com\"]').forEach(frame=>frame.contentWindow.postMessage(JSON.stringify({event:'command',func:'pauseVideo',args:[]}),'https://www.youtube.com'));", null)
         webView?.onPause()

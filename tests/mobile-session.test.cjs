@@ -12,7 +12,7 @@ function storage(values = {}) {
 }
 
 test("a recreated WebView restores account and guest sessions before React starts", () => {
-    for (const level of ["member", "admin", "guest"]) {
+    for (const level of ["member", "admin", "hostscreen", "guest"]) {
         const session = storage();
         const local = storage();
         restoreSession(session, local, { token: "saved-token", level, username: "  Alex  " });
@@ -22,6 +22,21 @@ test("a recreated WebView restores account and guest sessions before React start
         });
         assert.equal(session.getItem("usernameRequired"), null);
     }
+});
+
+test("HOSTSCREEN keeps its authentication level separately from organizer membership and never saves the key", () => {
+    const session = storage();
+    const local = storage();
+    const saved = {
+        token: "hostscreen-session", level: "hostscreen", username: "HOSTSCREEN",
+        memberId: "screen-member", memberName: "HOSTSCREEN", memberRole: "organizer"
+    };
+    restoreSession(session, local, { ...saved, key: "fixture-host-key" });
+    assert.deepEqual(readSession(session, local), saved);
+    assert.equal(session.getItem("key"), null);
+    assert.equal(local.getItem("key"), null);
+    assert.equal(safeLocation("/join", "https://karaoke.example"), "/join");
+    assert.equal(safeLocation("/organizer/party-1/screen-member", "https://karaoke.example"), "/organizer/party-1/screen-member");
 });
 
 test("legacy username selection and password fields never return with a saved session", () => {

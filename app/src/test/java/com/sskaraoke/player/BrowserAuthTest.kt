@@ -182,6 +182,7 @@ class BrowserAuthTest {
             saved.toJson().put("origin", "https://other.example"),
             saved.toJson().put("token", "signed-in").put("level", "member"),
             saved.toJson().put("token", "guest-session").put("level", "guest"),
+            saved.toJson().put("token", "hostscreen-session").put("level", "hostscreen"),
             saved.toJson().put("token", "signed-in").put("level", "invalid"),
             saved.toJson().put("token", "x".repeat(8193)).put("level", "member"),
             saved.toJson().put("pendingLogin", JSONObject()),
@@ -244,6 +245,7 @@ class BrowserAuthTest {
         val invalid = listOf(
             validResponse().put("level", "guest"),
             validResponse().put("level", "pending"),
+            validResponse().put("level", "hostscreen"),
             validResponse().put("level", "none"),
             validResponse().put("level", 123),
             validResponse().put("token", ""),
