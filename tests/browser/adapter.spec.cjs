@@ -114,6 +114,7 @@ test.beforeEach(async ({ context, page, savedSession, startupSession }) => {
     await page.goto(savedSession.route);
     if (!savedSession.token && !startupSession) await expect(page.locator(".passkey-panel")).toBeVisible();
     else if (savedSession.route === "/account") await expect(page.locator(".account-page")).toBeVisible();
+    else if (savedSession.route.startsWith("/organizer/")) await expect(page.locator(".organizer-layout")).toBeVisible();
     else await expect(page.locator(".guest-layout")).toBeVisible();
     await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     await page.evaluate(() => window.KaraokeAndroid.snapshot());

@@ -13,6 +13,119 @@
     let restoring = true;
     let lastSnapshot = "";
     let browserAuthScreen = "";
+    const sortControls = new Map();
+    let sorting = false;
+
+    function canSort(list) {
+        return list.querySelectorAll(".playlist-item").length > 1 &&
+            !!list.querySelector(".drag-handle[data-rfd-drag-handle-draggable-id]:not([aria-disabled=true])") &&
+            !document.querySelector(".playlist-item.dragging");
+    }
+
+    function songRating(item) {
+        const value = item.rating;
+        if (typeof value !== "number" && typeof value !== "string" || String(value).trim() === "") return 0;
+        const rating = Number(value);
+        return Number.isFinite(rating) && rating > 0 && rating <= 5 ? rating : 0;
+    }
+
+    async function sortSongs(list, mode, status) {
+        const route = location.pathname;
+        const partyId = route.match(/^\/(?:organizer|guest)\/([a-z0-9-]+)\/[a-z0-9-]+\/?$/i)?.[1];
+        const token = sessionStorage.getItem("authToken");
+        if (sorting || !partyId || !token || !canSort(list)) return;
+        const current = () => list.isConnected && location.pathname === route &&
+            sessionStorage.getItem("authToken") === token;
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 15000);
+        const request = async (path, body) => {
+            const response = await fetch(path, {
+                method: body ? "PUT" : "GET",
+                headers: { Authorization: ["Bearer", token].join(" "), "Content-Type": "application/json" },
+                body: body ? JSON.stringify(body) : undefined,
+                cache: "no-store", redirect: "error", signal: controller.signal
+            });
+            if (!response.ok) throw Object.assign(new Error(), { status: response.status });
+            return response;
+        };
+        sorting = true;
+        status.textContent = "Sorting…";
+        syncSortControls();
+        try {
+            const party = await (await request(`/api/parties/${partyId}`)).json();
+            if (party.is_locked) throw Object.assign(new Error(), { status: 423 });
+            if (!current()) return;
+            const queue = await (await request(`/api/queue/${partyId}`)).json();
+            if (!Array.isArray(queue) || queue.some(item => !item || typeof item.id !== "string" || !item.id ||
+                typeof item.video_title !== "string" || !Number.isSafeInteger(item.position) || item.position < 1) ||
+                new Set(queue.map(item => item.id)).size !== queue.length) throw new Error();
+            if (!current() || !canSort(list)) return;
+            if (mode === "rating" && !queue.some(item => songRating(item) > 0)) {
+                status.textContent = "No song ratings available. The server must provide ratings to sort by rating.";
+                return;
+            }
+            const ordered = [...queue].sort((a, b) => a.position - b.position);
+            const compareNames = new Intl.Collator(undefined, { sensitivity: "base", numeric: true }).compare;
+            const sorted = [...ordered].sort((a, b) => mode === "rating"
+                ? songRating(b) - songRating(a)
+                : compareNames(a.video_title.trim(), b.video_title.trim()));
+            if (sorted.every((item, index) => item.id === ordered[index].id)) {
+                status.textContent = `Already sorted by ${mode}.`;
+                return;
+            }
+            await request(`/api/queue/${partyId}/reorder`, {
+                order: sorted.map((item, index) => ({ id: item.id, position: index + 1 }))
+            });
+            if (current()) status.textContent = `Sorted by ${mode}. Shared song order saved.`;
+        } catch (error) {
+            if (current()) status.textContent = error.status === 423 ? "Party is locked. Song order cannot be changed."
+                : error.status === 401 ? "Your session has expired. Sign in again to sort songs."
+                : error.status === 403 ? "You do not have permission to sort this list."
+                : "Unable to confirm sorting. Check your connection and the current order before trying again.";
+        } finally {
+            clearTimeout(timeout);
+            sorting = false;
+            if (status.textContent === "Sorting…") status.textContent = "Sorting interrupted. Check the current order.";
+            syncSortControls();
+        }
+    }
+
+    function syncSortControls() {
+        const partyRoute = /^\/(?:organizer|guest)\/[a-z0-9-]+\/[a-z0-9-]+\/?$/i.test(location.pathname);
+        for (const [list, controls] of sortControls) {
+            if (!list.isConnected || !controls.isConnected || !partyRoute || !sessionStorage.getItem("authToken")) {
+                controls.remove();
+                sortControls.delete(list);
+            }
+        }
+        if (!partyRoute || !sessionStorage.getItem("authToken")) return;
+        for (const list of document.querySelectorAll(".playlist-list")) {
+            let controls = sortControls.get(list);
+            if (!controls) {
+                controls = document.createElement("div");
+                controls.className = "sskaraoke-sort";
+                controls.setAttribute("role", "group");
+                controls.setAttribute("aria-label", location.pathname.startsWith("/organizer/") ? "Playlist sorting" : "Queue sorting");
+                const status = document.createElement("div");
+                status.className = "sskaraoke-sort-status";
+                status.setAttribute("role", "status");
+                status.textContent = "Changes the shared song order.";
+                for (const [mode, direction] of [["name", "A–Z"], ["rating", "highest first"]]) {
+                    const button = document.createElement("button");
+                    button.type = "button";
+                    button.textContent = `Sort by ${mode}`;
+                    button.title = `Sort by ${mode} (${direction})`;
+                    button.addEventListener("click", () => sortSongs(list, mode, status));
+                    controls.appendChild(button);
+                }
+                controls.appendChild(status);
+                list.before(controls);
+                sortControls.set(list, controls);
+            }
+            controls.setAttribute("aria-busy", String(sorting));
+            for (const button of controls.querySelectorAll("button")) button.disabled = sorting || !canSort(list);
+        }
+    }
 
     function send(type, payload = {}) {
         window.KaraokeHost.postMessage(JSON.stringify({ type, ...payload }));
@@ -193,6 +306,7 @@
         let restoreQueued = false;
         const restoreView = () => {
             routeBrowserAuthentication();
+            syncSortControls();
             const dragging = !!document.querySelector(".playlist-item.dragging");
             if (dragging && !wasDragging) send("haptic");
             wasDragging = dragging;
@@ -219,7 +333,8 @@
             });
         };
         const observer = new MutationObserver(restoreView);
-        observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["class"] });
+        observer.observe(document.body, { childList: true, subtree: true, attributes: true,
+            attributeFilter: ["class", "aria-disabled", "data-rfd-drag-handle-draggable-id"] });
         restoreView();
         setTimeout(() => { restoring = false; snapshot(); }, 15000);
         send("ready");

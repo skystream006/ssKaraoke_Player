@@ -46,6 +46,8 @@ The hosted server UI retains party creation/joining, returning members, QR links
 
 - Swipe horizontally in the guest content area to move between Search, Queue, and Status. Swipe within the organizer sidebar to move between Playlist, Search, and its audio settings.
 - Long-press a song's enlarged drag handle, then drag and drop to reorder. This uses the server client's existing `@hello-pangea/dnd` touch sensor and reorder endpoint, with native haptic feedback. Queue locks and disabled drag permissions are respected.
+- **Sort by name** (A–Z, case-insensitive with natural number ordering) and **Sort by rating** (highest first) are available above both the organizer Playlist and guest Queue. Sorting saves the shared playback order through the existing reorder endpoint; ties retain their previous positions, and sorting does not start or stop playback. The hosted client's live queue updates display the saved order; if disconnected, it refreshes on reconnect. Controls require at least two songs and enabled drag permissions; locked parties cannot be sorted.
+- Rating sorting reads each queue item's optional `rating` (a number or numeric string from 0–5); missing, invalid, or zero ratings are unrated and come last. **The current `ss_karaoke_party` queue API does not expose song ratings**, including ssMusic ratings. That server must supply the field before rating sorting can take effect; when no rated songs are available, the app explains this and leaves the order unchanged. Name sorting needs no server changes.
 - Sliders, inputs, buttons, video, and active song drags do not trigger tab swipes. Existing play/remove controls remain available.
 - Android Back navigates back; full-screen video exits before the page does. The organizer screen stays awake while visible.
 - With a remote or keyboard, use the directional keys to reveal and move the pointer; hold a direction for smooth, accelerating movement. **OK/Enter** clicks, and holding it while moving drags sliders, scrolls content, or long-presses song handles. The pointer works on the party, native screens, dialogs, and full-screen video. **Menu** toggles between pointer and ordinary focus/keyboard navigation for the current window. Touch/mouse input hides it; the on-screen keyboard and screen-reader touch exploration retain their normal controls.
@@ -141,7 +143,7 @@ npm test
 npm run test:browser
 ```
 
-The standalone browser fixture verifies account/guest session and tab restoration, hosted authentication storage updates, sign-out/expiry and transient verification failures without mutation replay, gesture exclusions, and live theme switching. To also exercise the **actual server frontend** and its touch drag library against isolated mock API responses:
+The standalone browser fixture verifies account/guest session and tab restoration, hosted authentication storage updates, sign-out/expiry and transient verification failures without mutation replay, gesture exclusions, live theme switching, and playlist/queue sorting (including persistence, ties, unrated songs, locks, permissions, and failures). Sorting tests simulate the server's queue-update delivery. To also exercise the **actual server frontend** and its touch drag library against isolated mock API responses:
 
 ```powershell
 $env:KARAOKE_FRONTEND_BUILD = 'C:\DATA\ss_karaoke_party\frontend\build'

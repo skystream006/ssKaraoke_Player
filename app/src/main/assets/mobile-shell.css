@@ -31,6 +31,36 @@ html[data-sskaraoke-android] .guest-main,
 html[data-sskaraoke-android] .sidebar-body {
     overscroll-behavior-x: none;
 }
+html[data-sskaraoke-android] .sskaraoke-sort {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 12px;
+}
+html[data-sskaraoke-android] .sskaraoke-sort button {
+    min-height: 48px;
+    padding: 8px 12px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--bg-surface);
+    color: var(--text-primary);
+    font: inherit;
+    cursor: pointer;
+}
+html[data-sskaraoke-android] .sskaraoke-sort button:focus-visible {
+    outline: 2px solid var(--primary);
+    outline-offset: 2px;
+}
+html[data-sskaraoke-android] .sskaraoke-sort button:disabled {
+    opacity: 0.5;
+    cursor: default;
+}
+html[data-sskaraoke-android] .sskaraoke-sort-status {
+    flex-basis: 100%;
+    color: var(--text-secondary);
+    font-size: 0.875rem;
+    overflow-wrap: anywhere;
+}
 @media (max-width: 420px) {
     html[data-sskaraoke-android] .playlist-thumb {
         width: 48px;

@@ -117,6 +117,37 @@
         }
         window.addEventListener("auth:expired", clearSession);
         window.fixtureAuth = { request, persistSession, clearSession, rehydrate, ceremony, joinInvitation, logout };
+        async function refreshQueue() {
+            const list = root.querySelector(".playlist-list");
+            const partyId = location.pathname.split("/")[2];
+            if (!list || !partyId) return;
+            const queue = await request(`/queue/${partyId}`, { token: sessionStorage.getItem("authToken") });
+            if (!list.isConnected) return;
+            list.replaceChildren();
+            for (const item of queue) {
+                const row = document.createElement("li");
+                row.className = `playlist-item ${item.status === "playing" ? "playing" : ""}`;
+                row.dataset.rfdDraggableId = item.id;
+                const title = document.createElement("div");
+                title.className = "playlist-title";
+                title.textContent = item.video_title;
+                const content = document.createElement("div");
+                content.className = "playlist-item-row";
+                const position = document.createElement("span");
+                position.className = "playlist-pos";
+                position.textContent = item.position;
+                const handle = document.createElement("div");
+                handle.className = "drag-handle";
+                handle.dataset.rfdDragHandleDraggableId = item.id;
+                handle.setAttribute("role", "button");
+                handle.tabIndex = 0;
+                handle.textContent = "::";
+                content.append(position, handle);
+                row.append(title, content);
+                list.appendChild(row);
+            }
+        }
+        window.fixtureQueue = { refresh: refreshQueue };
         function render() {
             if (!sessionStorage.getItem("authToken")) {
                 root.innerHTML = '<section class="passkey-panel"><h1>Sign in with a passkey</h1><button>Sign in</button></section>';
@@ -136,6 +167,20 @@
                 root.querySelector(".queue-section").classList.toggle("mobile-hidden", button.textContent !== "Queue");
                 root.querySelector(".search-section").classList.toggle("mobile-hidden", button.textContent !== "Search");
             }));
+            if (location.pathname.startsWith("/organizer/")) {
+                root.querySelector(".guest-layout").className = "organizer-layout";
+                root.querySelector(".guest-main").className = "sidebar-body";
+                root.querySelector(".mobile-tabs").className = "sidebar-tabs";
+                root.querySelectorAll(".mobile-tab").forEach(button => {
+                    button.className = button.className.replace("mobile-tab", "sidebar-tab");
+                    if (button.textContent === "Queue") button.textContent = "Playlist";
+                });
+                root.querySelectorAll(".sidebar-tab").forEach(button => button.addEventListener("click", () => {
+                    root.querySelectorAll(".sidebar-tab").forEach(item => item.classList.toggle("active", item === button));
+                    root.querySelector(".queue-section").classList.toggle("mobile-hidden", button.textContent !== "Playlist");
+                }));
+            }
+            refreshQueue().catch(() => {});
         }
         if (sessionStorage.getItem("authToken")) rehydrate();
         else render();
