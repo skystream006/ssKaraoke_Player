@@ -142,7 +142,7 @@ npm test
 npm run test:browser
 ```
 
-The standalone browser fixture verifies account/guest session and tab restoration, hosted authentication storage updates, sign-out/expiry and transient verification failures without mutation replay, gesture exclusions, and live theme switching. To also exercise the **actual server frontend** and its touch drag library against isolated mock API responses:
+The standalone browser fixture verifies account/guest session and tab restoration, hosted authentication storage updates, sign-out/expiry and transient verification failures without mutation replay, gesture exclusions, and live theme switching. A separate ordering fixture uses React and the server's `@hello-pangea/dnd` library to test Playlist/Queue move buttons, touch dragging, duplicate songs, all playback statuses, list boundaries, permission changes, and rejected-save rollback on phone and tablet viewports. These libraries are test-only dependencies, not bundled into the APK. To also exercise the **actual server frontend** against isolated mock API responses:
 
 ```powershell
 $env:KARAOKE_FRONTEND_BUILD = 'C:\DATA\ss_karaoke_party\frontend\build'

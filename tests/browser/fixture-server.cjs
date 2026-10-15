@@ -3,6 +3,12 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const build = process.env.KARAOKE_FRONTEND_BUILD ? path.resolve(process.env.KARAOKE_FRONTEND_BUILD) : null;
+const reorderFiles = {
+    "/reorder-fixture.html": path.join(__dirname, "reorder-fixture.html"),
+    "/test-vendor/react.js": path.resolve(__dirname, "../../node_modules/react/umd/react.development.js"),
+    "/test-vendor/react-dom.js": path.resolve(__dirname, "../../node_modules/react-dom/umd/react-dom.development.js"),
+    "/test-vendor/dnd.js": path.resolve(__dirname, "../../node_modules/@hello-pangea/dnd/dist/dnd.js")
+};
 const contentTypes = { ".html": "text/html", ".js": "application/javascript", ".css": "text/css", ".png": "image/png", ".svg": "image/svg+xml", ".json": "application/json", ".woff2": "font/woff2" };
 const server = http.createServer((request, response) => {
     const address = new URL(request.url, "http://127.0.0.1:4178");
@@ -16,8 +22,8 @@ const server = http.createServer((request, response) => {
         fs.createReadStream(path.resolve(__dirname, "../../app/src/main/res/drawable/app_icon.png")).pipe(response);
         return;
     }
-    let file = path.join(__dirname, "fixture.html");
-    if (build) {
+    let file = reorderFiles[address.pathname] || path.join(__dirname, "fixture.html");
+    if (build && !reorderFiles[address.pathname]) {
         const candidate = path.resolve(build, "." + decodeURIComponent(address.pathname));
         if (!candidate.startsWith(build + path.sep) && candidate !== build) {
             response.writeHead(403); response.end(); return;

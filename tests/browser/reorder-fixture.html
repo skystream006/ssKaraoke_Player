@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Playlist ordering contract fixture</title>
+    <style>
+        * { box-sizing: border-box; }
+        body { margin: 0; font-family: sans-serif; }
+        main, aside { padding: 12px; }
+        .playlist-list { display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 0; list-style: none; }
+        .playlist-item { display: flex; flex-direction: column; padding: 8px; border: 1px solid gray; border-radius: 8px; }
+        .playlist-item-row { display: flex; align-items: center; gap: 8px; }
+        .playlist-info { flex: 1; }
+        .playlist-actions { display: flex; }
+        .playlist-thumb { width: 48px; height: 36px; }
+        .mobile-tabs, .sidebar-tabs { display: flex; gap: 8px; padding: 12px; }
+        .mobile-tab, .sidebar-tab, .playlist-actions button { min-width: 44px; min-height: 48px; }
+    </style>
+    <script src="/test-vendor/react.js"></script>
+    <script src="/test-vendor/react-dom.js"></script>
+    <script>
+        // The DnD UMD build expects the compatibility hook as a global; React 18 provides it natively.
+        window.shim = { useSyncExternalStore: React.useSyncExternalStore };
+    </script>
+    <script src="/test-vendor/dnd.js"></script>
+</head>
+<body>
+    <div id="root"></div>
+    <script>
+        const h = React.createElement;
+        const { DragDropContext, Droppable, Draggable } = ReactBeautifulDnd;
+        const partyId = "11111111-1111-4111-8111-111111111111";
+        const organizer = new URLSearchParams(location.search).get("view") === "playlist";
+        const tabClass = organizer ? "sidebar-tab" : "mobile-tab";
+        async function request(method, suffix = "", body) {
+            const response = await fetch(`/api/queue/${partyId}${suffix}`, {
+                method,
+                headers: { "Content-Type": "application/json", Authorization: ["Bearer", sessionStorage.getItem("authToken")].join(" ") },
+                body: body === undefined ? undefined : JSON.stringify(body)
+            });
+            if (!response.ok) throw new Error("Failed to reorder queue.");
+            return response.json();
+        }
+        function Playlist() {
+            const [queue, setQueue] = React.useState([]);
+            const [allowed, setAllowed] = React.useState(true);
+            const [tab, setTab] = React.useState(organizer ? "Playlist" : "Queue");
+            const [error, setError] = React.useState("");
+            window.sortFixture = { setQueue, setAllowed };
+            React.useEffect(() => { request("GET").then(setQueue); }, []);
+            const sorted = [...queue].sort((a, b) => a.position - b.position);
+            async function onDragEnd(result) {
+                if (!result.destination || result.source.index === result.destination.index) return;
+                const moved = [...sorted];
+                moved.splice(result.destination.index, 0, moved.splice(result.source.index, 1)[0]);
+                const reordered = moved.map((item, index) => ({ ...item, position: index + 1 }));
+                setQueue(reordered);
+                setError("");
+                try {
+                    await request("PUT", "/reorder", { order: reordered.map(({ id, position }) => ({ id, position })) });
+                } catch (failure) {
+                    setError(failure.message);
+                    setQueue(sorted);
+                }
+            }
+            const list = h(DragDropContext, { onDragEnd },
+                h(Droppable, { droppableId: "playlist", isDropDisabled: !allowed }, provided =>
+                    h("ul", { className: "playlist-list", ref: provided.innerRef, ...provided.droppableProps },
+                        ...sorted.map((item, index) =>
+                            h(Draggable, { key: item.id, draggableId: item.id, index, isDragDisabled: !allowed }, (drag, state) =>
+                                h("li", {
+                                    ref: drag.innerRef, ...drag.draggableProps,
+                                    className: `playlist-item ${item.status} ${state.isDragging ? "dragging" : ""}`
+                                },
+                                h("div", { className: "playlist-title" }, item.video_title),
+                                h("div", { className: "playlist-item-row" },
+                                    h("div", { className: "playlist-pos" }, item.position),
+                                    allowed && h("div", { ...drag.dragHandleProps, className: "drag-handle", title: "Drag to reorder" }, "⠿"),
+                                    h("img", { className: "playlist-thumb", src: "/test-icon.png", alt: "" }),
+                                    h("div", { className: "playlist-info" }, item.singer_name),
+                                    h("div", { className: "playlist-actions" },
+                                        h("button", { onClick: () => setQueue(queue.filter(entry => entry.id !== item.id)) }, "Remove")
+                                    )
+                                ))
+                            )
+                        ), provided.placeholder
+                    )
+                )
+            );
+            return h(React.Fragment, null,
+                h("nav", { className: organizer ? "sidebar-tabs" : "mobile-tabs" },
+                    ...[organizer ? "Playlist" : "Queue", "Search"].map(name =>
+                        h("button", { key: name, className: `${tabClass} ${tab === name ? "active" : ""}`, onClick: () => setTab(name) }, name)
+                    )
+                ),
+                h(organizer ? "aside" : "main", { className: organizer ? "sidebar-body" : "guest-main" },
+                    error && h("div", { role: "alert" }, error),
+                    tab === "Search" ? h("input", { "aria-label": "Search songs" }) :
+                        h("section", { className: organizer ? "playlist-section" : "queue-section" }, list)
+                )
+            );
+        }
+        ReactDOM.createRoot(document.querySelector("#root")).render(h(Playlist));
+    </script>
+</body>
+</html>
