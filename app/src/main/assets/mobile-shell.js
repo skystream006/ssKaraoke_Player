@@ -181,6 +181,72 @@
         }
     }, { passive: true });
 
+    const reorderHandle = ".drag-handle[data-rfd-drag-handle-draggable-id]";
+
+    function playlistItems(list) {
+        return Array.from(list.children).filter(item => item.matches(".playlist-item"));
+    }
+
+    function moveSong(item, direction) {
+        const list = item.closest(".playlist-list");
+        const handle = item.querySelector(reorderHandle);
+        if (!list || !handle || handle.matches("[disabled], [aria-disabled=true]") ||
+            document.querySelector(".playlist-item.dragging")) return;
+        const items = playlistItems(list);
+        const destination = items.indexOf(item) + direction;
+        if (destination < 0 || destination >= items.length) return;
+
+        // Use the hosted keyboard sensor so React owns ordering, permissions, and API rollback.
+        const press = (key, code, keyCode) => !handle.dispatchEvent(new KeyboardEvent("keydown", {
+            key, code, keyCode, which: keyCode, bubbles: true, cancelable: true
+        }));
+        handle.focus({ preventScroll: true });
+        if (!press(" ", "Space", 32)) return;
+        const arrow = direction < 0 ? "ArrowUp" : "ArrowDown";
+        if (press(arrow, arrow, direction < 0 ? 38 : 40)) press(" ", "Space", 32);
+        else press("Escape", "Escape", 27);
+    }
+
+    function attachReorderControls() {
+        const dragging = !!document.querySelector(".playlist-item.dragging");
+        document.querySelectorAll(".playlist-list").forEach(list => {
+            const items = playlistItems(list);
+            items.forEach((item, index) => {
+                const handle = item.querySelector(reorderHandle);
+                let controls = item.querySelector(".sskaraoke-reorder-controls");
+                if (!handle) {
+                    controls?.remove();
+                    return;
+                }
+                if (!controls) {
+                    controls = document.createElement("div");
+                    controls.className = "sskaraoke-reorder-controls";
+                    controls.setAttribute("role", "group");
+                    for (const [direction, text] of [[-1, "↑ Move up"], [1, "↓ Move down"]]) {
+                        const button = document.createElement("button");
+                        button.type = "button";
+                        button.textContent = text;
+                        button.addEventListener("click", event => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            moveSong(item, direction);
+                        });
+                        controls.appendChild(button);
+                    }
+                    item.appendChild(controls);
+                }
+                const title = item.querySelector(".playlist-title")?.textContent.trim() || "song";
+                const label = `Reorder ${title}`;
+                if (controls.getAttribute("aria-label") !== label) controls.setAttribute("aria-label", label);
+                Array.from(controls.children).forEach((button, buttonIndex) => {
+                    const disabled = dragging || handle.matches("[disabled], [aria-disabled=true]") ||
+                        (buttonIndex === 0 ? index === 0 : index === items.length - 1);
+                    if (button.disabled !== disabled) button.disabled = disabled;
+                });
+            });
+        });
+    }
+
     function attach() {
         applyTheme(localStorage.getItem("karaokeTheme") || "neonPurple");
         document.documentElement.dataset.sskaraokeAndroid = "true";
@@ -193,6 +259,7 @@
         let restoreQueued = false;
         const restoreView = () => {
             routeBrowserAuthentication();
+            attachReorderControls();
             const dragging = !!document.querySelector(".playlist-item.dragging");
             if (dragging && !wasDragging) send("haptic");
             wasDragging = dragging;
@@ -219,7 +286,10 @@
             });
         };
         const observer = new MutationObserver(restoreView);
-        observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["class"] });
+        observer.observe(document.body, {
+            childList: true, subtree: true, characterData: true, attributes: true,
+            attributeFilter: ["class", "disabled", "aria-disabled", "data-rfd-drag-handle-draggable-id"]
+        });
         restoreView();
         setTimeout(() => { restoring = false; snapshot(); }, 15000);
         send("ready");
