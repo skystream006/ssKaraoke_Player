@@ -31,6 +31,8 @@ import okhttp3.Response
 import okhttp3.ResponseBody.Companion.toResponseBody
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
+import okhttp3.mockwebserver.QueueDispatcher
+import okhttp3.mockwebserver.RecordedRequest
 import okhttp3.mockwebserver.SocketPolicy
 import org.junit.Assert.*
 import org.junit.Test
@@ -45,6 +47,7 @@ import org.robolectric.annotation.GraphicsMode
 import org.robolectric.shadows.ShadowDialog
 import org.robolectric.util.ReflectionHelpers
 import java.time.Instant
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
 class PreviewActivity : MainActivity() {
@@ -223,6 +226,14 @@ class NativeUiTest {
 
     @Test fun backgroundingPingCancelsItAndRechecksOnResume() {
         MockWebServer().use { server ->
+            val dispatched = CountDownLatch(1)
+            server.dispatcher = object : QueueDispatcher() {
+                override fun dispatch(request: RecordedRequest): MockResponse {
+                    val response = super.dispatch(request)
+                    dispatched.countDown()
+                    return response
+                }
+            }
             server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE))
             server.enqueue(MockResponse())
             Robolectric.buildActivity(PreviewActivity::class.java).setup().use { controller ->
@@ -231,12 +242,16 @@ class NativeUiTest {
                 store.update(SavedSession(origin = ServerAddress.parse(server.url("/").toString()).origin))
                 ReflectionHelpers.callInstanceMethod<Unit>(activity, "connect")
                 assertEquals("/", server.takeRequest(5, TimeUnit.SECONDS)?.path)
+                assertTrue("Initial ping response was not dispatched", dispatched.await(5, TimeUnit.SECONDS))
+                val check = ReflectionHelpers.getField<kotlinx.coroutines.Job>(activity, "connectionJob")
                 controller.pause().stop()
+                assertTrue(check.isCancelled)
                 shadowOf(Looper.getMainLooper()).idle()
                 assertFalse(descendants(activity.window.decorView).filterIsInstance<TextView>()
                     .any { it.text == "Sign in to karaoke" || it.text == "Unable to connect to server" })
                 controller.start().resume()
                 awaitText(activity, "Sign in to karaoke")
+                assertEquals("/", server.takeRequest(5, TimeUnit.SECONDS)?.path)
                 assertEquals(2, server.requestCount)
                 assertEquals("", store.current.token)
             }
