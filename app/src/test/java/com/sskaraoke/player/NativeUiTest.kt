@@ -355,6 +355,7 @@ class NativeUiTest {
         MockWebServer().use { server ->
             server.enqueue(MockResponse())
             server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE))
+            server.enqueue(MockResponse())
             Robolectric.buildActivity(PreviewActivity::class.java).setup().use { controller ->
                 val activity = controller.get()
                 val store = ReflectionHelpers.getField<SessionStore>(activity, "store")
@@ -370,12 +371,13 @@ class NativeUiTest {
                     .single { it.text == "Sign in" }.performClick()
                 assertEquals("/api/auth/hostscreen/login", server.takeRequest(5, TimeUnit.SECONDS)?.path)
                 controller.pause().stop().start().resume()
-                shadowOf(Looper.getMainLooper()).idle()
+                awaitText(activity, "Sign in to karaoke")
+                assertEquals("/", server.takeRequest(5, TimeUnit.SECONDS)?.path)
                 assertEquals("", input.text.toString())
                 assertEquals("", store.current.token)
                 assertNull(store.current.pendingLogin)
                 assertTrue(descendants(activity.window.decorView).filterIsInstance<MaterialButton>().any { it.text == "Sign in as HOSTSCREEN" })
-                assertEquals(2, server.requestCount)
+                assertEquals(3, server.requestCount)
             }
         }
     }

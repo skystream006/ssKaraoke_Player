@@ -1029,7 +1029,9 @@ open class MainActivity : AppCompatActivity() {
         if (signInJob?.isActive == true) {
             cancelSignIn()
             sessionClient.cancel()
-            showSignInOptions("Sign-in was interrupted. Start a new sign-in; the previous request will not be retried.")
+            connectionPaused = true
+            pageProgress.isVisible = false
+            formPage().addView(text("Sign-in was interrupted. Start a new sign-in; the previous request will not be retried.", 20f, true))
         }
         webView?.evaluateJavascript("window.KaraokeAndroid?.snapshot();document.querySelectorAll('iframe[src*=\"youtube.com\"]').forEach(frame=>frame.contentWindow.postMessage(JSON.stringify({event:'command',func:'pauseVideo',args:[]}),'https://www.youtube.com'));", null)
         webView?.onPause()
