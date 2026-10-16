@@ -67,6 +67,14 @@ class SessionClient(private val client: OkHttpClient = OkHttpClient.Builder()
         }
     }
 
+    suspend fun ping(origin: String) = withContext(Dispatchers.IO) {
+        val request = Request.Builder().url(ServerAddress.parse(origin).url)
+            .header("Cache-Control", "no-cache").build()
+        exchangeClient.newCall(request).awaitResponse().use { response ->
+            if (!response.isSuccessful) throw IOException("Server returned HTTP ${response.code}.")
+        }
+    }
+
     suspend fun exchange(authorization: BrowserAuthorizationCode): SavedSession = withContext(Dispatchers.IO) {
         try {
             val origin = BrowserAuth.validatedOrigin(authorization.origin)

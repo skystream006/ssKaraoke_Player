@@ -177,6 +177,8 @@ open class MainActivity : AppCompatActivity() {
     }
 
     private fun showServerSetup(prefill: String = "") {
+        connectionJob?.cancel()
+        connectionPaused = false
         disposeWebView()
         pageProgress.isVisible = false
         val form = formPage()
@@ -256,6 +258,46 @@ open class MainActivity : AppCompatActivity() {
     }
 
     private fun showSignIn(message: String = "") {
+        connectionJob?.cancel()
+        connectionPaused = false
+        disposeWebView()
+        pageProgress.isVisible = false
+        val saved = store.current
+        val form = formPage()
+        form.addView(ProgressBar(this).apply { indeterminateTintList = ColorStateList.valueOf(primary) },
+            LinearLayout.LayoutParams(dp(40), dp(40)).apply { gravity = Gravity.CENTER_HORIZONTAL })
+        form.addView(text("Checking server connection...", 22f, true), rowParams(20))
+        form.addView(text(saved.origin, 15f, secondary = true), rowParams(12))
+        connectionJob = lifecycleScope.launch {
+            try {
+                sessionClient.ping(saved.origin)
+                if (store.current.origin != saved.origin || store.current.token != saved.token) return@launch
+                showSignInOptions(message)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                if (store.current.origin != saved.origin || store.current.token != saved.token) return@launch
+                showServerConnectionError(saved.origin) { showSignIn(message) }
+            }
+        }
+    }
+
+    private fun showServerConnectionError(origin: String, retry: () -> Unit) {
+        val server = ServerAddress.parse(origin)
+        val form = formPage()
+        form.addView(text("Unable to connect to server", 24f, true))
+        form.addView(text(origin, 16f).apply { setTextIsSelectable(true) }, rowParams(16))
+        form.addView(text("Server name: ${server.url.host}\nProtocol: ${server.url.scheme.uppercase()}\nPort: ${server.url.port}",
+            15f, secondary = true), rowParams(12))
+        form.addView(text("Is this the correct server name? Check the address and your network connection. If it is correct, make sure the server is running and its certificate is trusted.", 16f), rowParams(16))
+        form.addView(button("Try again", action = retry), rowParams(20))
+        form.addView(button("Edit server address", true) {
+            cancelSignIn()
+            showServerSetup(origin)
+        }, rowParams(12))
+    }
+
+    private fun showSignInOptions(message: String = "") {
         disposeWebView()
         pageProgress.isVisible = false
         val pending = store.current.pendingLogin
@@ -272,7 +314,7 @@ open class MainActivity : AppCompatActivity() {
             else "Use your website passkey in your browser. You can also create an account there; approval is controlled by the server."
         }, 16f), rowParams(16))
         form.addView(button(if (waiting) "Cancel sign-in" else "Sign in with passkey") {
-            if (waiting) { cancelSignIn(); showSignIn() } else beginBrowserLogin()
+            if (waiting) { cancelSignIn(); showSignInOptions() } else beginBrowserLogin()
         }, rowParams(20))
         form.addView(button("Sign in as HOSTSCREEN", true) { cancelSignIn(); showHostScreenSignIn() }, rowParams(12))
         form.addView(button("Open party link", true) { promptJoinLink() }, rowParams(12))
@@ -305,7 +347,7 @@ open class MainActivity : AppCompatActivity() {
         input.setOnEditorActionListener { _, action, _ ->
             if (action == EditorInfo.IME_ACTION_GO) { signIn.performClick(); true } else false
         }
-        form.addView(button("Back to sign-in options", true) { input.text?.clear(); showSignIn() }, rowParams(12))
+        form.addView(button("Back to sign-in options", true) { input.text?.clear(); showSignInOptions() }, rowParams(12))
     }
 
     private fun beginHostScreenLogin(key: String) {
@@ -352,7 +394,7 @@ open class MainActivity : AppCompatActivity() {
             store.update(store.current.copy(pendingLogin = pending))
             store.flush()
             check(!store.writeFailed)
-            showSignIn()
+            showSignInOptions()
             CustomTabsIntent.Builder().build().launchUrl(this, Uri.parse(BrowserAuth.loginUrl(pending)))
         } catch (_: Exception) {
             cancelSignIn()
@@ -969,7 +1011,7 @@ open class MainActivity : AppCompatActivity() {
             connectionPaused = false
             connect()
         }
-        if (store.current.pendingLogin != null && signInJob?.isActive != true) showSignIn()
+        if (store.current.pendingLogin != null && signInJob?.isActive != true && connectionJob?.isActive != true) showSignIn()
         if (!startupCheckDone && automaticUpdateChecks()) {
             startupCheckDone = true
             checkForUpdates(true)
@@ -987,7 +1029,9 @@ open class MainActivity : AppCompatActivity() {
         if (signInJob?.isActive == true) {
             cancelSignIn()
             sessionClient.cancel()
-            showSignIn("Sign-in was interrupted. Start a new sign-in; the previous request will not be retried.")
+            connectionPaused = true
+            pageProgress.isVisible = false
+            formPage().addView(text("Sign-in was interrupted. Start a new sign-in; the previous request will not be retried.", 20f, true))
         }
         webView?.evaluateJavascript("window.KaraokeAndroid?.snapshot();document.querySelectorAll('iframe[src*=\"youtube.com\"]').forEach(frame=>frame.contentWindow.postMessage(JSON.stringify({event:'command',func:'pauseVideo',args:[]}),'https://www.youtube.com'));", null)
         webView?.onPause()

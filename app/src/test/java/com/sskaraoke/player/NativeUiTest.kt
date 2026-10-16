@@ -25,6 +25,10 @@ import com.google.android.material.appbar.MaterialToolbar
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.textfield.TextInputEditText
 import com.google.android.material.textfield.TextInputLayout
+import okhttp3.OkHttpClient
+import okhttp3.Protocol
+import okhttp3.Response
+import okhttp3.ResponseBody.Companion.toResponseBody
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import okhttp3.mockwebserver.SocketPolicy
@@ -133,20 +137,151 @@ class NativeUiTest {
     }
 
     @Test fun signedOutHomeUsesNativeBrowserSignInInsteadOfWebView() {
-        Robolectric.buildActivity(PreviewActivity::class.java).setup().use { controller ->
-            val activity = controller.get()
-            val store = ReflectionHelpers.getField<SessionStore>(activity, "store")
-            store.update(SavedSession(origin = "https://karaoke.example"))
-            ReflectionHelpers.callInstanceMethod<Unit>(activity, "connect")
-            val root = activity.window.decorView
-            measure(root, 320, 800)
-            assertNull(ReflectionHelpers.getField<android.webkit.WebView?>(activity, "webView"))
-            val buttons = descendants(root).filterIsInstance<MaterialButton>().toList()
-            assertTrue(buttons.any { it.text == "Sign in with passkey" && it.isShown })
-            assertTrue(buttons.any { it.text == "Sign in as HOSTSCREEN" && it.isShown })
-            assertTrue(buttons.any { it.text == "Open party link" })
-            assertNull(store.current.pendingLogin)
-            assertEquals("", store.current.token)
+        MockWebServer().use { server ->
+            server.enqueue(MockResponse().setHeadersDelay(1, TimeUnit.SECONDS))
+            Robolectric.buildActivity(PreviewActivity::class.java).setup().use { controller ->
+                val activity = controller.get()
+                val store = ReflectionHelpers.getField<SessionStore>(activity, "store")
+                store.update(SavedSession(origin = ServerAddress.parse(server.url("/").toString()).origin))
+                ReflectionHelpers.callInstanceMethod<Unit>(activity, "connect")
+                assertTrue(descendants(activity.window.decorView).filterIsInstance<TextView>()
+                    .any { it.text == "Checking server connection..." })
+                assertFalse(descendants(activity.window.decorView).filterIsInstance<MaterialButton>()
+                    .any { it.text == "Sign in with passkey" || it.text == "Sign in as HOSTSCREEN" })
+                assertEquals("/", server.takeRequest(5, TimeUnit.SECONDS)?.path)
+                awaitText(activity, "Sign in to karaoke")
+                val root = activity.window.decorView
+                measure(root, 320, 800)
+                assertNull(ReflectionHelpers.getField<android.webkit.WebView?>(activity, "webView"))
+                val buttons = descendants(root).filterIsInstance<MaterialButton>().toList()
+                assertTrue(buttons.any { it.text == "Sign in with passkey" && it.isShown })
+                assertTrue(buttons.any { it.text == "Sign in as HOSTSCREEN" && it.isShown })
+                assertTrue(buttons.any { it.text == "Open party link" })
+                assertNull(store.current.pendingLogin)
+                assertEquals("", store.current.token)
+            }
+        }
+    }
+
+    @Test fun failedPingShowsServerDetailsAndRetryChecksAgainBeforeSignIn() {
+        MockWebServer().use { server ->
+            server.enqueue(MockResponse().setResponseCode(503).setBody("untrusted response"))
+            server.enqueue(MockResponse())
+            Robolectric.buildActivity(PreviewActivity::class.java).setup().use { controller ->
+                val activity = controller.get()
+                val store = ReflectionHelpers.getField<SessionStore>(activity, "store")
+                val saved = SavedSession(origin = ServerAddress.parse(server.url("/").toString()).origin, theme = "forest")
+                store.update(saved)
+                ReflectionHelpers.callInstanceMethod<Unit>(activity, "connect")
+                awaitText(activity, "Unable to connect to server")
+                val labels = descendants(activity.window.decorView).filterIsInstance<TextView>().map { it.text.toString() }.toList()
+                assertTrue(labels.contains(saved.origin))
+                assertTrue(labels.any { it.contains("Server name: localhost") && it.contains("Protocol: HTTP") && it.contains("Port: ${server.port}") })
+                assertTrue(labels.any { it.contains("Is this the correct server name?") })
+                assertFalse(labels.any { it.contains("untrusted response") || it == "Sign in with passkey" || it == "Sign in as HOSTSCREEN" })
+                assertNull(shadowOf(activity).nextStartedActivity)
+                assertEquals(saved, store.current)
+                descendants(activity.window.decorView).filterIsInstance<MaterialButton>()
+                    .single { it.text == "Try again" }.performClick()
+                awaitText(activity, "Sign in to karaoke")
+                assertEquals(2, server.requestCount)
+                assertEquals(saved, store.current)
+            }
+        }
+    }
+
+    @Test fun unreachableServerCanBeCorrectedWithoutShowingSignInFirst() {
+        val unavailable = MockWebServer()
+        val origin = ServerAddress.parse(unavailable.url("/").toString()).origin
+        unavailable.shutdown()
+        MockWebServer().use { server ->
+            server.enqueue(MockResponse())
+            Robolectric.buildActivity(PreviewActivity::class.java).setup().use { controller ->
+                val activity = controller.get()
+                val store = ReflectionHelpers.getField<SessionStore>(activity, "store")
+                store.update(SavedSession(origin = origin, theme = "ocean"))
+                ReflectionHelpers.callInstanceMethod<Unit>(activity, "connect")
+                awaitText(activity, "Unable to connect to server")
+                descendants(activity.window.decorView).filterIsInstance<MaterialButton>()
+                    .single { it.text == "Edit server address" }.performClick()
+                val input = descendants(activity.window.decorView).filterIsInstance<TextInputEditText>().single()
+                assertEquals(origin, input.text.toString())
+                input.setText(server.url("/").toString())
+                descendants(activity.window.decorView).filterIsInstance<MaterialButton>()
+                    .single { it.text == "Connect" }.performClick()
+                val confirmation = ShadowDialog.getLatestDialog() as androidx.appcompat.app.AlertDialog
+                assertEquals(0, server.requestCount)
+                confirmation.getButton(android.content.DialogInterface.BUTTON_POSITIVE).performClick()
+                awaitText(activity, "Sign in to karaoke")
+                assertEquals(ServerAddress.parse(server.url("/").toString()).origin, store.current.origin)
+                assertEquals("ocean", store.current.theme)
+                assertEquals("", store.current.token)
+                assertEquals(1, server.requestCount)
+            }
+        }
+    }
+
+    @Test fun backgroundingPingCancelsItAndRechecksOnResume() {
+        MockWebServer().use { server ->
+            server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE))
+            server.enqueue(MockResponse())
+            Robolectric.buildActivity(PreviewActivity::class.java).setup().use { controller ->
+                val activity = controller.get()
+                val store = ReflectionHelpers.getField<SessionStore>(activity, "store")
+                store.update(SavedSession(origin = ServerAddress.parse(server.url("/").toString()).origin))
+                ReflectionHelpers.callInstanceMethod<Unit>(activity, "connect")
+                assertEquals("/", server.takeRequest(5, TimeUnit.SECONDS)?.path)
+                controller.pause().stop()
+                shadowOf(Looper.getMainLooper()).idle()
+                assertFalse(descendants(activity.window.decorView).filterIsInstance<TextView>()
+                    .any { it.text == "Sign in to karaoke" || it.text == "Unable to connect to server" })
+                controller.start().resume()
+                awaitText(activity, "Sign in to karaoke")
+                assertEquals(2, server.requestCount)
+                assertEquals("", store.current.token)
+            }
+        }
+    }
+
+    @Test fun leavingAPendingCheckDoesNotReplaceServerSetup() {
+        MockWebServer().use { server ->
+            server.enqueue(MockResponse().setHeadersDelay(1, TimeUnit.SECONDS))
+            Robolectric.buildActivity(PreviewActivity::class.java).setup().use { controller ->
+                val activity = controller.get()
+                val store = ReflectionHelpers.getField<SessionStore>(activity, "store")
+                store.update(SavedSession(origin = ServerAddress.parse(server.url("/").toString()).origin))
+                ReflectionHelpers.callInstanceMethod<Unit>(activity, "connect")
+                assertNotNull(server.takeRequest(5, TimeUnit.SECONDS))
+                val check = ReflectionHelpers.getField<kotlinx.coroutines.Job>(activity, "connectionJob")
+                ReflectionHelpers.callInstanceMethod<Unit>(activity, "showServerSetup",
+                    ReflectionHelpers.ClassParameter.from(String::class.java, "https://correct.example"))
+                assertTrue(check.isCancelled)
+                shadowOf(Looper.getMainLooper()).idle()
+                assertEquals("https://correct.example",
+                    descendants(activity.window.decorView).filterIsInstance<TextInputEditText>().single().text.toString())
+                assertFalse(descendants(activity.window.decorView).filterIsInstance<MaterialButton>()
+                    .any { it.text == "Sign in with passkey" })
+            }
+        }
+    }
+
+    @Test fun savedLoginIsPreservedWhenSessionVerificationIsUnavailable() {
+        MockWebServer().use { server ->
+            server.enqueue(MockResponse().setResponseCode(503))
+            Robolectric.buildActivity(PreviewActivity::class.java).setup().use { controller ->
+                val activity = controller.get()
+                val store = ReflectionHelpers.getField<SessionStore>(activity, "store")
+                val saved = SavedSession(origin = ServerAddress.parse(server.url("/").toString()).origin,
+                    token = "saved-session", level = "member", username = "Alex")
+                store.update(saved)
+                ReflectionHelpers.callInstanceMethod<Unit>(activity, "connect")
+                awaitText(activity, "Connection unavailable")
+                assertEquals("/api/auth/me", server.takeRequest(5, TimeUnit.SECONDS)?.path)
+                assertEquals(1, server.requestCount)
+                assertEquals(saved, store.current)
+                assertFalse(descendants(activity.window.decorView).filterIsInstance<MaterialButton>()
+                    .any { it.text == "Sign in with passkey" || it.text == "Edit server address" })
+            }
         }
     }
 
@@ -154,8 +289,10 @@ class NativeUiTest {
         Robolectric.buildActivity(PreviewActivity::class.java).setup().use { controller ->
             val activity = controller.get()
             val store = ReflectionHelpers.getField<SessionStore>(activity, "store")
+            stubSuccessfulPing(activity)
             store.update(SavedSession(origin = "https://karaoke.example", pendingLogin = BrowserAuth.begin("https://karaoke.example")))
             ReflectionHelpers.callInstanceMethod<Unit>(activity, "connect")
+            awaitText(activity, "Finish sign-in in your browser")
             descendants(activity.window.decorView).filterIsInstance<MaterialButton>()
                 .single { it.text == "Sign in as HOSTSCREEN" }.performClick()
             val views = descendants(activity.window.decorView).toList()
@@ -177,6 +314,7 @@ class NativeUiTest {
 
     @Test fun hostScreenLoginSavesTheSessionAndOpensPartySelection() {
         MockWebServer().use { server ->
+            server.enqueue(MockResponse())
             server.enqueue(MockResponse().setBody(JSONObject().put("token", "hostscreen-session").put("level", "hostscreen")
                 .put("user", JSONObject().put("name", "HOSTSCREEN"))
                 .put("expiresAt", Instant.now().plusSeconds(3600).toString()).toString()))
@@ -186,6 +324,8 @@ class NativeUiTest {
                 val store = ReflectionHelpers.getField<SessionStore>(activity, "store")
                 store.update(SavedSession(origin = ServerAddress.parse(server.url("/").toString()).origin, theme = "forest"))
                 ReflectionHelpers.callInstanceMethod<Unit>(activity, "connect")
+                awaitText(activity, "Sign in to karaoke")
+                assertEquals("/", server.takeRequest(5, TimeUnit.SECONDS)?.path)
                 descendants(activity.window.decorView).filterIsInstance<MaterialButton>()
                     .single { it.text == "Sign in as HOSTSCREEN" }.performClick()
                 val input = descendants(activity.window.decorView).filterIsInstance<TextInputEditText>().single()
@@ -213,12 +353,16 @@ class NativeUiTest {
 
     @Test fun backgroundingHostScreenLoginCancelsTheRequestWithoutSavingTheKey() {
         MockWebServer().use { server ->
+            server.enqueue(MockResponse())
             server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE))
+            server.enqueue(MockResponse())
             Robolectric.buildActivity(PreviewActivity::class.java).setup().use { controller ->
                 val activity = controller.get()
                 val store = ReflectionHelpers.getField<SessionStore>(activity, "store")
                 store.update(SavedSession(origin = ServerAddress.parse(server.url("/").toString()).origin))
                 ReflectionHelpers.callInstanceMethod<Unit>(activity, "connect")
+                awaitText(activity, "Sign in to karaoke")
+                assertEquals("/", server.takeRequest(5, TimeUnit.SECONDS)?.path)
                 descendants(activity.window.decorView).filterIsInstance<MaterialButton>()
                     .single { it.text == "Sign in as HOSTSCREEN" }.performClick()
                 val input = descendants(activity.window.decorView).filterIsInstance<TextInputEditText>().single()
@@ -227,12 +371,13 @@ class NativeUiTest {
                     .single { it.text == "Sign in" }.performClick()
                 assertEquals("/api/auth/hostscreen/login", server.takeRequest(5, TimeUnit.SECONDS)?.path)
                 controller.pause().stop().start().resume()
-                shadowOf(Looper.getMainLooper()).idle()
+                awaitText(activity, "Sign in to karaoke")
+                assertEquals("/", server.takeRequest(5, TimeUnit.SECONDS)?.path)
                 assertEquals("", input.text.toString())
                 assertEquals("", store.current.token)
                 assertNull(store.current.pendingLogin)
                 assertTrue(descendants(activity.window.decorView).filterIsInstance<MaterialButton>().any { it.text == "Sign in as HOSTSCREEN" })
-                assertEquals(1, server.requestCount)
+                assertEquals(3, server.requestCount)
             }
         }
     }
@@ -241,10 +386,13 @@ class NativeUiTest {
         Robolectric.buildActivity(PreviewActivity::class.java).setup().use { controller ->
             val activity = controller.get()
             val store = ReflectionHelpers.getField<SessionStore>(activity, "store")
+            stubSuccessfulPing(activity)
             val pending = BrowserAuth.begin("https://karaoke.example")
             store.update(SavedSession(origin = pending.origin, pendingLogin = pending))
             ReflectionHelpers.callInstanceMethod<Unit>(activity, "connect")
+            awaitText(activity, "Finish sign-in in your browser")
             controller.pause().stop().start().resume()
+            awaitText(activity, "Finish sign-in in your browser")
             assertEquals(pending, store.current.pendingLogin)
             val cancel = descendants(activity.window.decorView).filterIsInstance<MaterialButton>()
                 .single { it.text == "Cancel sign-in" }
@@ -258,6 +406,7 @@ class NativeUiTest {
         Robolectric.buildActivity(PreviewActivity::class.java).setup().use { controller ->
             val activity = controller.get()
             val store = ReflectionHelpers.getField<SessionStore>(activity, "store")
+            stubSuccessfulPing(activity)
             val pending = BrowserAuth.begin("https://karaoke.example")
             store.update(SavedSession(origin = pending.origin, pendingLogin = pending))
             val invalid = Intent(Intent.ACTION_VIEW, Uri.parse(
@@ -274,13 +423,15 @@ class NativeUiTest {
         }
     }
 
-    @Test fun expiredPendingLoginReturnsToFreshSignInWithoutARequest() {
+    @Test fun expiredPendingLoginReturnsToFreshSignInAfterPingWithoutAuthenticating() {
         Robolectric.buildActivity(PreviewActivity::class.java).setup().use { controller ->
             val activity = controller.get()
             val store = ReflectionHelpers.getField<SessionStore>(activity, "store")
+            stubSuccessfulPing(activity)
             val pending = BrowserAuth.begin("https://karaoke.example", System.currentTimeMillis() - BrowserAuth.LOGIN_LIFETIME_MS - 1)
             store.update(SavedSession(origin = pending.origin, pendingLogin = pending))
             ReflectionHelpers.callInstanceMethod<Unit>(activity, "connect")
+            awaitText(activity, "Sign in to karaoke")
             assertNull(store.current.pendingLogin)
             assertTrue(descendants(activity.window.decorView).filterIsInstance<MaterialButton>().any { it.text == "Sign in with passkey" })
         }
@@ -486,6 +637,28 @@ class NativeUiTest {
                     JSONObject().put("type", "snapshot").put("state", SavedSession(theme = "ocean").seed())))
             assertEquals("forest", store.current.theme)
         }
+    }
+
+    private fun stubSuccessfulPing(activity: MainActivity) {
+        val client = OkHttpClient.Builder().addInterceptor { chain ->
+            val request = chain.request()
+            assertEquals("https://karaoke.example/", request.url.toString())
+            assertEquals("GET", request.method)
+            assertNull(request.header("Authorization"))
+            Response.Builder().request(request).protocol(Protocol.HTTP_1_1)
+                .code(200).message("OK").body("".toResponseBody()).build()
+        }.build()
+        ReflectionHelpers.setField(activity, "sessionClient", SessionClient(client))
+    }
+
+    private fun awaitText(activity: MainActivity, label: String) {
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
+        while (System.nanoTime() < deadline) {
+            shadowOf(Looper.getMainLooper()).idle()
+            if (descendants(activity.window.decorView).filterIsInstance<TextView>().any { it.text == label }) return
+            Thread.sleep(10)
+        }
+        fail("Expected screen text: $label")
     }
 
     private fun settingsButton(activity: MainActivity) =
