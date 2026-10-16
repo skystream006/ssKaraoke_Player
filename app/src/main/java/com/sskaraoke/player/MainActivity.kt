@@ -314,7 +314,7 @@ open class MainActivity : AppCompatActivity() {
             else "Use your website passkey in your browser. You can also create an account there; approval is controlled by the server."
         }, 16f), rowParams(16))
         form.addView(button(if (waiting) "Cancel sign-in" else "Sign in with passkey") {
-            if (waiting) { cancelSignIn(); showSignIn() } else beginBrowserLogin()
+            if (waiting) { cancelSignIn(); showSignInOptions() } else beginBrowserLogin()
         }, rowParams(20))
         form.addView(button("Sign in as HOSTSCREEN", true) { cancelSignIn(); showHostScreenSignIn() }, rowParams(12))
         form.addView(button("Open party link", true) { promptJoinLink() }, rowParams(12))
@@ -347,7 +347,7 @@ open class MainActivity : AppCompatActivity() {
         input.setOnEditorActionListener { _, action, _ ->
             if (action == EditorInfo.IME_ACTION_GO) { signIn.performClick(); true } else false
         }
-        form.addView(button("Back to sign-in options", true) { input.text?.clear(); showSignIn() }, rowParams(12))
+        form.addView(button("Back to sign-in options", true) { input.text?.clear(); showSignInOptions() }, rowParams(12))
     }
 
     private fun beginHostScreenLogin(key: String) {
@@ -1029,7 +1029,7 @@ open class MainActivity : AppCompatActivity() {
         if (signInJob?.isActive == true) {
             cancelSignIn()
             sessionClient.cancel()
-            showSignIn("Sign-in was interrupted. Start a new sign-in; the previous request will not be retried.")
+            showSignInOptions("Sign-in was interrupted. Start a new sign-in; the previous request will not be retried.")
         }
         webView?.evaluateJavascript("window.KaraokeAndroid?.snapshot();document.querySelectorAll('iframe[src*=\"youtube.com\"]').forEach(frame=>frame.contentWindow.postMessage(JSON.stringify({event:'command',func:'pauseVideo',args:[]}),'https://www.youtube.com'));", null)
         webView?.onPause()

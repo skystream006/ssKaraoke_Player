@@ -1,15 +1,75 @@
 package com.sskaraoke.player
 
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.launch
+import okhttp3.OkHttpClient
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
+import okhttp3.mockwebserver.SocketPolicy
 import org.json.JSONObject
 import org.junit.Assert.*
 import org.junit.Test
 import java.io.IOException
 import java.time.Instant
+import java.util.concurrent.TimeUnit
 
 class SessionTest {
+    @Test fun pingChecksTheRootWithoutCredentialsOrInvitationSecrets() = runBlocking {
+        for (status in listOf(200, 204)) MockWebServer().use { server ->
+            server.enqueue(MockResponse().setResponseCode(status))
+            SessionClient().ping(server.url("/join/invite#invite=${"a".repeat(43)}").toString())
+            val request = server.takeRequest(5, TimeUnit.SECONDS)!!
+            assertEquals("/", request.path)
+            assertEquals("GET", request.method)
+            assertEquals("no-cache", request.getHeader("Cache-Control"))
+            assertNull(request.getHeader("Authorization"))
+            assertNull(request.getHeader("Cookie"))
+            assertEquals(0L, request.bodySize)
+        }
+    }
+
+    @Test fun pingRejectsHttpErrorsWithoutFollowingRedirects() = runBlocking {
+        for (status in listOf(302, 307, 401, 403, 404, 408, 429, 500, 503)) {
+            MockWebServer().use { server ->
+                server.enqueue(MockResponse().setResponseCode(status).setHeader("Location", "/other")
+                    .setBody("untrusted server content"))
+                server.enqueue(MockResponse())
+                try {
+                    SessionClient().ping(server.url("/").toString())
+                    fail("Expected ping failure")
+                } catch (failure: IOException) {
+                    assertEquals("Server returned HTTP $status.", failure.message)
+                    assertEquals(1, server.requestCount)
+                }
+            }
+        }
+    }
+
+    @Test fun pingFailsWhenTheServerIsUnreachable() = runBlocking {
+        val server = MockWebServer()
+        val origin = server.url("/").toString()
+        server.shutdown()
+        try {
+            SessionClient().ping(origin)
+            fail("Expected connection failure")
+        } catch (_: IOException) { }
+    }
+
+    @Test fun cancellingPingCancelsTheNetworkCall() = runBlocking {
+        MockWebServer().use { server ->
+            server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE))
+            val http = OkHttpClient()
+            val job = launch(Dispatchers.Default) { SessionClient(http).ping(server.url("/").toString()) }
+            assertNotNull(server.takeRequest(5, TimeUnit.SECONDS))
+            val call = http.dispatcher.runningCalls().single()
+            job.cancelAndJoin()
+            assertTrue(call.isCanceled())
+            assertTrue(job.isCancelled)
+        }
+    }
+
     @Test fun serverAddressesHaveExplicitOriginBoundaries() {
         assertEquals("https://karaoke.example", ServerAddress.parse("karaoke.example/").origin)
         assertEquals("/join/ABC123", ServerAddress.parse("http://192.168.1.5:3000/join/ABC123").initialRoute)
