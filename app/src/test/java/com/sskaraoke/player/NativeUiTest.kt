@@ -320,8 +320,8 @@ class NativeUiTest {
             views.filterIsInstance<MaterialButton>().single { it.text == "Sign in" }.performClick()
             assertEquals("Enter the HOSTSCREEN login key.", views.filterIsInstance<TextInputLayout>().single().error.toString())
             input.setText("fixture-host-key")
-            assertEquals("fixture-host-key", store.current.hostScreenKey)
-            assertFalse(store.current.seed().toString().contains("fixture-host-key"))
+            assertEquals("", store.current.hostScreenKey)
+            assertFalse(store.current.toJson().toString().contains("fixture-host-key"))
             views.filterIsInstance<MaterialButton>().single { it.text == "Back to sign-in options" }.performClick()
             assertEquals("", input.text.toString())
             assertTrue(descendants(activity.window.decorView).filterIsInstance<MaterialButton>().any { it.text == "Sign in with passkey" })
@@ -361,7 +361,9 @@ class NativeUiTest {
                 assertEquals("/join", store.current.route)
                 assertEquals("forest", store.current.theme)
                 assertNull(store.current.pendingLogin)
-                assertFalse(store.current.toJson().toString().contains("fixture-host-key"))
+                assertEquals("fixture-host-key", store.current.hostScreenKey)
+                assertEquals("fixture-host-key", store.current.toJson().getString("hostScreenKey"))
+                assertFalse(store.current.seed().toString().contains("fixture-host-key"))
                 assertNull(shadowOf(activity).nextStartedActivity)
             }
         }
@@ -791,16 +793,16 @@ class NativeUiTest {
             if (descendants(activity.window.decorView).filterIsInstance<TextView>().any { it.text == label }) return
             Thread.sleep(10)
         }
-
-        private fun awaitToken(store: SessionStore, token: String) {
-            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
-            while (store.current.token != token && System.nanoTime() < deadline) {
-                shadowOf(Looper.getMainLooper()).idle()
-                Thread.sleep(10)
-            }
-            assertEquals(token, store.current.token)
-        }
         fail("Expected screen text: $label")
+    }
+
+    private fun awaitToken(store: SessionStore, token: String) {
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
+        while (store.current.token != token && System.nanoTime() < deadline) {
+            shadowOf(Looper.getMainLooper()).idle()
+            Thread.sleep(10)
+        }
+        assertEquals(token, store.current.token)
     }
 
     private fun settingsButton(activity: MainActivity) =

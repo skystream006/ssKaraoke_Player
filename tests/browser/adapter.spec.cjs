@@ -203,6 +203,47 @@ test("failed sign-out preserves login, while an already-revoked session can sign
     expect(await authEvents(page)).toEqual([{ type: "logout" }]);
 });
 
+for (const transport of ["fetch", "xhr"]) {
+    for (const expiry of ["event", "me"]) {
+        test(`${transport} explicit logout wins over concurrent ${expiry} expiry`, async ({ page }) => {
+            let release;
+            const requested = new Promise(resolve => { release = resolve; });
+            await page.route("**/api/auth/logout", interception => release(interception));
+            await page.evaluate(transport => {
+                window.pendingLogout = window.fixtureAuth.request("/auth/logout", {
+                    transport, method: "POST", token: sessionStorage.getItem("authToken"), body: {}
+                }).then(() => window.fixtureAuth.clearSession());
+            }, transport);
+            const interception = await requested;
+            if (expiry === "event") {
+                await page.evaluate(() => window.dispatchEvent(new Event("auth:expired")));
+            } else {
+                await page.route("**/api/auth/me", response => response.fulfill({ status: 401, json: {} }));
+                await page.evaluate(transport => window.fixtureAuth.rehydrate(transport), transport);
+            }
+            await interception.fulfill({ status: 200, json: {} });
+            await page.evaluate(() => window.pendingLogout);
+            expect(await authEvents(page)).toEqual([{ type: "logout" }]);
+            expect((await checkpoint(page)).token).toBe("");
+        });
+    }
+
+    test(`${transport} failed logout still permits later automatic expiry handling`, async ({ page }) => {
+        await page.route("**/api/auth/logout", interception => interception.fulfill({ status: 503, json: {} }));
+        await page.evaluate(async transport => {
+            try {
+                await window.fixtureAuth.request("/auth/logout", {
+                    transport, method: "POST", token: sessionStorage.getItem("authToken"), body: {}
+                });
+            } catch (_) { }
+        }, transport);
+        expect(await authEvents(page)).toEqual([]);
+        expect((await checkpoint(page)).token).toBe(seed.token);
+        await page.evaluate(() => window.dispatchEvent(new Event("auth:expired")));
+        expect(await authEvents(page)).toEqual([{ type: "expired" }]);
+    });
+}
+
 test.describe("account route", () => {
     test.use({ savedSession: { ...seed, route: "/account", view: {} } });
 

@@ -11,6 +11,7 @@
     let snapshotTimer;
     let authenticationUnavailable = false;
     let authenticationExpired = false;
+    let logoutToken = null;
     let restoring = true;
     let lastSnapshot = "";
     let browserAuthScreen = "";
@@ -82,7 +83,8 @@
     }
 
     function expireSession() {
-        if (authenticationUnavailable || authenticationExpired || !sessionStorage.getItem("authToken")) return;
+        const token = sessionStorage.getItem("authToken");
+        if (authenticationUnavailable || authenticationExpired || !token || token === logoutToken) return;
         authenticationExpired = true;
         send("expired");
     }
@@ -90,8 +92,13 @@
     window.addEventListener("auth:expired", expireSession, { capture: true });
 
     function sessionResponse(path, token, status) {
+        if (!token || token !== sessionStorage.getItem("authToken")) return;
+        if (path === "/api/auth/logout") {
+            if ((status < 200 || status >= 300) && status !== 401 && logoutToken === token) logoutToken = null;
+            return;
+        }
         // AuthContext clears storage on any /me failure, including temporary outages.
-        if (path !== "/api/auth/me" || !token || token !== sessionStorage.getItem("authToken")) return;
+        if (path !== "/api/auth/me" || token === logoutToken) return;
         if (status === 401) { expireSession(); return; }
         if (status !== 401 && (status < 200 || status >= 300) && !authenticationUnavailable) {
             authenticationUnavailable = true;
@@ -103,6 +110,7 @@
     if (originalFetch) window.fetch = async function (input, options) {
         const path = apiRequest(typeof input === "string" || input instanceof URL ? input : input.url);
         const token = sessionStorage.getItem("authToken");
+        if (path === "/api/auth/logout") logoutToken = token;
         try {
             const response = await originalFetch.apply(this, arguments);
             sessionResponse(path, token, response.status);
@@ -120,7 +128,7 @@
         const result = originalOpen.apply(this, arguments);
         const request = { path: apiRequest(url), token: null };
         requests.set(this, request);
-        if (request.path === "/api/auth/me") {
+        if (request.path === "/api/auth/me" || request.path === "/api/auth/logout") {
             // Install before Axios assigns onerror, whose rejection clears sessionStorage.
             const events = ["load", "error", "timeout", "abort"];
             const finished = () => {
@@ -134,6 +142,7 @@
     XMLHttpRequest.prototype.send = function (body) {
         const request = requests.get(this);
         if (request) request.token = sessionStorage.getItem("authToken");
+        if (request?.path === "/api/auth/logout") logoutToken = request.token;
         return originalSend.apply(this, arguments);
     };
 
