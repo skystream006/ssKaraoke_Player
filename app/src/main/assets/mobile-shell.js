@@ -10,7 +10,7 @@
     const scrollSelectors = [".sidebar-body", ".guest-main", ".queue-section", ".search-section"];
     let snapshotTimer;
     let authenticationUnavailable = false;
-    let authenticationExpired = false;
+    let authenticationEnded = false;
     let logoutToken = null;
     let restoring = true;
     let lastSnapshot = "";
@@ -29,7 +29,7 @@
     }
 
     function snapshot() {
-        if (authenticationUnavailable || authenticationExpired) return;
+        if (authenticationUnavailable || authenticationEnded) return;
         const scroll = { window: Math.round(window.scrollY) };
         for (const selector of scrollSelectors) {
             const element = document.querySelector(selector);
@@ -54,7 +54,7 @@
     }
 
     function routeBrowserAuthentication() {
-        if (authenticationUnavailable || authenticationExpired) return;
+        if (authenticationUnavailable || authenticationEnded) return;
         const screen = location.pathname.replace(/\/$/, "") === "/account" ? "account"
             : !sessionStorage.getItem("authToken") &&
                 document.querySelector(".passkey-panel[aria-labelledby='passkey-title']") ? "signin" : "";
@@ -82,27 +82,38 @@
         } catch (_) { return ""; }
     }
 
+    function endSession(type) {
+        if (authenticationEnded) return;
+        authenticationEnded = true;
+        send(type);
+    }
+
     function expireSession() {
         const token = sessionStorage.getItem("authToken");
-        if (authenticationUnavailable || authenticationExpired || !token || token === logoutToken) return;
-        authenticationExpired = true;
-        send("expired");
+        if (authenticationUnavailable || !token || token === logoutToken) return;
+        endSession("expired");
     }
 
     window.addEventListener("auth:expired", expireSession, { capture: true });
 
     function sessionResponse(path, token, status) {
-        if (!token || token !== sessionStorage.getItem("authToken")) return;
+        const currentToken = sessionStorage.getItem("authToken");
+        const completingLogout = path === "/api/auth/logout" && token === logoutToken;
+        if (authenticationEnded || !token || token !== currentToken && !(completingLogout && !currentToken)) return;
         if (path === "/api/auth/logout") {
-            if ((status < 200 || status >= 300) && status !== 401 && logoutToken === token) logoutToken = null;
+            if (status >= 200 && status < 300 || status === 401) endSession("logout");
+            else if (completingLogout) {
+                logoutToken = null;
+                if (authenticationUnavailable) send("unavailable");
+            }
             return;
         }
         // AuthContext clears storage on any /me failure, including temporary outages.
-        if (path !== "/api/auth/me" || token === logoutToken) return;
+        if (path !== "/api/auth/me") return;
         if (status === 401) { expireSession(); return; }
         if (status !== 401 && (status < 200 || status >= 300) && !authenticationUnavailable) {
             authenticationUnavailable = true;
-            send("unavailable");
+            if (token !== logoutToken) send("unavailable");
         }
     }
 
@@ -152,7 +163,7 @@
             const signingOut = this === sessionStorage && sessionStorage.getItem("authToken") &&
                 (method === "clear" || method === "removeItem" && key === "authToken");
             const result = original.apply(this, arguments);
-            if (signingOut && !authenticationUnavailable && !authenticationExpired) send("logout");
+            if (signingOut && !authenticationUnavailable) endSession("logout");
             if (this === sessionStorage && key === "authLevel" || this === localStorage && key === "defaultUsername") snapshot();
             if (this === sessionStorage || this === localStorage) scheduleSnapshot();
             return result;

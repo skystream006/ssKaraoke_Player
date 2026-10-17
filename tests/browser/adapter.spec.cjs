@@ -206,6 +206,7 @@ test("failed sign-out preserves login, while an already-revoked session can sign
 for (const transport of ["fetch", "xhr"]) {
     for (const expiry of ["event", "me"]) {
         test(`${transport} explicit logout wins over concurrent ${expiry} expiry`, async ({ page }) => {
+            test.skip(Boolean(process.env.KARAOKE_FRONTEND_BUILD), "Uses the fixture's AuthContext simulation.");
             let release;
             const requested = new Promise(resolve => { release = resolve; });
             await page.route("**/api/auth/logout", interception => release(interception));
@@ -229,6 +230,7 @@ for (const transport of ["fetch", "xhr"]) {
     }
 
     test(`${transport} failed logout still permits later automatic expiry handling`, async ({ page }) => {
+        test.skip(Boolean(process.env.KARAOKE_FRONTEND_BUILD), "Uses the fixture's AuthContext simulation.");
         await page.route("**/api/auth/logout", interception => interception.fulfill({ status: 503, json: {} }));
         await page.evaluate(async transport => {
             try {
@@ -242,6 +244,29 @@ for (const transport of ["fetch", "xhr"]) {
         await page.evaluate(() => window.dispatchEvent(new Event("auth:expired")));
         expect(await authEvents(page)).toEqual([{ type: "expired" }]);
     });
+
+    for (const logoutStatus of [200, 503]) {
+        test(`${transport} verification outage during logout ${logoutStatus} preserves unrevoked credentials`, async ({ page }) => {
+            test.skip(Boolean(process.env.KARAOKE_FRONTEND_BUILD), "Uses the fixture's AuthContext simulation.");
+            let release;
+            const requested = new Promise(resolve => { release = resolve; });
+            await page.route("**/api/auth/logout", interception => release(interception));
+            await page.evaluate(transport => {
+                window.pendingLogout = window.fixtureAuth.request("/auth/logout", {
+                    transport, method: "POST", token: sessionStorage.getItem("authToken"), body: {}
+                }).then(() => window.fixtureAuth.clearSession()).catch(() => {});
+            }, transport);
+            const interception = await requested;
+            await page.route("**/api/auth/me", response => response.fulfill({ status: 503, json: {} }));
+            await page.evaluate(transport => window.fixtureAuth.rehydrate(transport), transport);
+            expect(await authEvents(page)).toEqual([]);
+            expect((await checkpoint(page)).token).toBe(seed.token);
+            await interception.fulfill({ status: logoutStatus, json: {} });
+            await page.evaluate(() => window.pendingLogout);
+            expect(await authEvents(page)).toEqual([{ type: logoutStatus === 200 ? "logout" : "unavailable" }]);
+            expect((await checkpoint(page)).token).toBe(logoutStatus === 200 ? "" : seed.token);
+        });
+    }
 }
 
 test.describe("account route", () => {
