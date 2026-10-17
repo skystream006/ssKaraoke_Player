@@ -49,7 +49,7 @@ test.beforeEach(async ({ context, page, savedSession, startupSession }) => {
             const event=JSON.parse(message);
             window.nativeEvents.push(event);
             if(event.type==='snapshot') writeStorage.call(sessionStorage,'native-test-checkpoint',JSON.stringify(event.state));
-            if(event.type==='logout') {
+            if(event.type==='logout' || event.type==='expired') {
                 const previous=JSON.parse(sessionStorage.getItem('native-test-checkpoint') || '{}');
                 writeStorage.call(sessionStorage,'native-test-checkpoint',JSON.stringify({
                     ...previous, token:'', level:'none', memberId:'', memberName:'', memberRole:'', route:'/', view:{}
@@ -167,7 +167,7 @@ test("the server auth:expired event clears the checkpoint without resurrecting i
         window.dispatchEvent(new Event("auth:expired"));
     });
     await expect(page.locator(".passkey-panel")).toBeVisible();
-    expect(await authEvents(page)).toEqual([{ type: "logout" }]);
+    expect(await authEvents(page)).toEqual([{ type: "expired" }]);
     await expect.poll(async () => (await checkpoint(page)).token).toBe("");
     await recreateWebView(page);
     await expect(page.locator(".passkey-panel")).toBeVisible();
@@ -202,6 +202,72 @@ test("failed sign-out preserves login, while an already-revoked session can sign
     await expect(page.locator(".passkey-panel")).toBeVisible();
     expect(await authEvents(page)).toEqual([{ type: "logout" }]);
 });
+
+for (const transport of ["fetch", "xhr"]) {
+    for (const expiry of ["event", "me"]) {
+        test(`${transport} explicit logout wins over concurrent ${expiry} expiry`, async ({ page }) => {
+            test.skip(Boolean(process.env.KARAOKE_FRONTEND_BUILD), "Uses the fixture's AuthContext simulation.");
+            let release;
+            const requested = new Promise(resolve => { release = resolve; });
+            await page.route("**/api/auth/logout", interception => release(interception));
+            await page.evaluate(transport => {
+                window.pendingLogout = window.fixtureAuth.request("/auth/logout", {
+                    transport, method: "POST", token: sessionStorage.getItem("authToken"), body: {}
+                }).then(() => window.fixtureAuth.clearSession());
+            }, transport);
+            const interception = await requested;
+            if (expiry === "event") {
+                await page.evaluate(() => window.dispatchEvent(new Event("auth:expired")));
+            } else {
+                await page.route("**/api/auth/me", response => response.fulfill({ status: 401, json: {} }));
+                await page.evaluate(transport => window.fixtureAuth.rehydrate(transport), transport);
+            }
+            await interception.fulfill({ status: 200, json: {} });
+            await page.evaluate(() => window.pendingLogout);
+            expect(await authEvents(page)).toEqual([{ type: "logout" }]);
+            expect((await checkpoint(page)).token).toBe("");
+        });
+    }
+
+    test(`${transport} failed logout still permits later automatic expiry handling`, async ({ page }) => {
+        test.skip(Boolean(process.env.KARAOKE_FRONTEND_BUILD), "Uses the fixture's AuthContext simulation.");
+        await page.route("**/api/auth/logout", interception => interception.fulfill({ status: 503, json: {} }));
+        await page.evaluate(async transport => {
+            try {
+                await window.fixtureAuth.request("/auth/logout", {
+                    transport, method: "POST", token: sessionStorage.getItem("authToken"), body: {}
+                });
+            } catch (_) { }
+        }, transport);
+        expect(await authEvents(page)).toEqual([]);
+        expect((await checkpoint(page)).token).toBe(seed.token);
+        await page.evaluate(() => window.dispatchEvent(new Event("auth:expired")));
+        expect(await authEvents(page)).toEqual([{ type: "expired" }]);
+    });
+
+    for (const logoutStatus of [200, 503]) {
+        test(`${transport} verification outage during logout ${logoutStatus} preserves unrevoked credentials`, async ({ page }) => {
+            test.skip(Boolean(process.env.KARAOKE_FRONTEND_BUILD), "Uses the fixture's AuthContext simulation.");
+            let release;
+            const requested = new Promise(resolve => { release = resolve; });
+            await page.route("**/api/auth/logout", interception => release(interception));
+            await page.evaluate(transport => {
+                window.pendingLogout = window.fixtureAuth.request("/auth/logout", {
+                    transport, method: "POST", token: sessionStorage.getItem("authToken"), body: {}
+                }).then(() => window.fixtureAuth.clearSession()).catch(() => {});
+            }, transport);
+            const interception = await requested;
+            await page.route("**/api/auth/me", response => response.fulfill({ status: 503, json: {} }));
+            await page.evaluate(transport => window.fixtureAuth.rehydrate(transport), transport);
+            expect(await authEvents(page)).toEqual([]);
+            expect((await checkpoint(page)).token).toBe(seed.token);
+            await interception.fulfill({ status: logoutStatus, json: {} });
+            await page.evaluate(() => window.pendingLogout);
+            expect(await authEvents(page)).toEqual([{ type: logoutStatus === 200 ? "logout" : "unavailable" }]);
+            expect((await checkpoint(page)).token).toBe(logoutStatus === 200 ? "" : seed.token);
+        });
+    }
+}
 
 test.describe("account route", () => {
     test.use({ savedSession: { ...seed, route: "/account", view: {} } });
@@ -446,7 +512,7 @@ test.describe("fixture AuthContext contract", () => {
             await page.route("**/api/auth/me", interception => interception.fulfill({ status: 401, json: { error: "Expired" } }));
             await page.evaluate(transport => window.fixtureAuth.rehydrate(transport), transport);
             await expect(page.locator(".passkey-panel")).toBeVisible();
-            expect(await authEvents(page)).toEqual([{ type: "logout" }]);
+            expect(await authEvents(page)).toEqual([{ type: "expired" }]);
             expect((await checkpoint(page)).token).toBe("");
             await recreateWebView(page);
             await expect(page.locator(".passkey-panel")).toBeVisible();

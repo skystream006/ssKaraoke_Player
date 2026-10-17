@@ -221,7 +221,7 @@ open class MainActivity : AppCompatActivity() {
     private fun connect() {
         if (store.current.origin.isEmpty() || signOutJob?.isActive == true || signInJob?.isActive == true) return
         connectionJob?.cancel()
-        if (store.current.token.isEmpty() &&
+        if (store.current.token.isEmpty() && store.current.hostScreenKey.isEmpty() &&
             (store.current.pendingLogin != null || !store.current.route.startsWith("/join/invite#invite="))) {
             showSignIn()
             return
@@ -238,16 +238,24 @@ open class MainActivity : AppCompatActivity() {
             try {
                 val resumed = sessionClient.resume(saved)
                 if (store.current.origin != saved.origin || store.current.token != saved.token) return@launch
-                store.update(store.current.copy(level = resumed.level, username = resumed.username))
+                store.update(if (resumed.token != saved.token) resumed.copy(theme = store.current.theme)
+                    else store.current.copy(level = resumed.level, username = resumed.username, hostScreenKey = resumed.hostScreenKey))
+                store.flush()
                 showWebView()
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (expired: SignInRequired) {
                 if (store.current.origin != saved.origin || store.current.token != saved.token) return@launch
-                store.update(store.current.signedOut().copy(
-                    route = store.current.route.takeIf { it.startsWith("/join/") } ?: "/"))
+                store.update(store.current.expired())
                 if (store.current.route.startsWith("/join/invite#invite=")) showWebView() else showSignIn()
                 toast(expired.message.orEmpty())
+            } catch (failure: HostScreenSignInException) {
+                if (store.current.origin != saved.origin || store.current.token != saved.token) return@launch
+                if (failure.credentialsRejected) {
+                    store.update(store.current.signedOut())
+                    store.flush()
+                    showHostScreenSignIn(failure.message.orEmpty())
+                } else showError(failure.message.orEmpty()) { connect() }
             } catch (failure: Exception) {
                 if (webView == null) showError(failure.message ?: "Cannot reach the server.") { connect() }
                 else {
@@ -328,7 +336,7 @@ open class MainActivity : AppCompatActivity() {
         form.addView(text("Sign in as HOSTSCREEN", 24f, true))
         form.addView(text(store.current.origin, 15f, secondary = true), rowParams(12))
         form.addView(text(message.ifEmpty {
-            "Enter the server's HOSTSCREEN login key to join an existing party as a playback screen. The key is not saved."
+            "Enter the server's HOSTSCREEN login key to join an existing party as a playback screen. After successful sign-in, the key is saved securely for automatic sign-in. Switching user or server removes it."
         }, 16f), rowParams(16))
         val (field, input) = inputField("HOSTSCREEN login key", type = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD)
         input.isSaveEnabled = false
@@ -391,7 +399,7 @@ open class MainActivity : AppCompatActivity() {
         disposeWebView()
         try {
             val pending = BrowserAuth.begin(store.current.origin)
-            store.update(store.current.copy(pendingLogin = pending))
+            store.update(store.current.copy(pendingLogin = pending, hostScreenKey = ""))
             store.flush()
             check(!store.writeFailed)
             showSignInOptions()
@@ -606,6 +614,7 @@ open class MainActivity : AppCompatActivity() {
                 updateKeepAwake()
             }
             "unavailable" -> showError("Session verification is temporarily unavailable. Your sign-in is saved.") { connect() }
+            "expired" -> clearSession(store.current.expired())
             "logout" -> clearSession(store.current.signedOut().copy(
                 route = store.current.route.takeIf { it.startsWith("/join/") } ?: "/"))
             "ready" -> webView?.evaluateJavascript("window.KaraokeAndroid?.applyTheme(${JSONObject.quote(store.current.theme)})", null)

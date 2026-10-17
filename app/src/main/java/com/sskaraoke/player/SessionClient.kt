@@ -36,7 +36,7 @@ internal suspend fun Call.awaitResponse(): Response = suspendCancellableCoroutin
 
 class SignInRequired(message: String) : IOException(message)
 
-class HostScreenSignInException(message: String) : IOException(message)
+class HostScreenSignInException(message: String, val credentialsRejected: Boolean = false) : IOException(message)
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class BrowserSignInException(message: String) : IOException(message), CopyableThrowable<BrowserSignInException> {
@@ -97,13 +97,15 @@ class SessionClient(private val client: OkHttpClient = OkHttpClient.Builder()
 
     suspend fun loginHostScreen(origin: String, key: String): SavedSession = withContext(Dispatchers.IO) {
         var message = "HOSTSCREEN sign-in failed. Please try again."
+        var credentialsRejected = false
         try {
-            require(key.isNotBlank())
+            require(key.isNotBlank() && key.length <= 8192)
             val server = ServerAddress.parse(origin)
             val request = Request.Builder().url(server.api("auth/hostscreen/login"))
                 .header("Accept", "application/json")
                 .post(oneShotJsonBody(JSONObject().put("key", key))).build()
             exchangeClient.newCall(request).awaitResponse().use { response ->
+                credentialsRejected = response.code == 401 || response.code == 403
                 message = when (response.code) {
                     401 -> "Invalid HOSTSCREEN login key."
                     403 -> "The HOSTSCREEN account is unavailable."
@@ -112,12 +114,12 @@ class SessionClient(private val client: OkHttpClient = OkHttpClient.Builder()
                     else -> message
                 }
                 require(response.isSuccessful)
-                response.accountSession(server.origin, setOf("hostscreen")).copy(route = "/join")
+                response.accountSession(server.origin, setOf("hostscreen")).copy(route = "/join", hostScreenKey = key)
             }
         } catch (failure: CancellationException) {
             throw failure
         } catch (_: Exception) {
-            throw HostScreenSignInException(message)
+            throw HostScreenSignInException(message, credentialsRejected)
         }
     }
 
@@ -148,19 +150,29 @@ class SessionClient(private val client: OkHttpClient = OkHttpClient.Builder()
     }
 
     suspend fun resume(saved: SavedSession): SavedSession = withContext(Dispatchers.IO) {
-        if (saved.origin.isBlank() || saved.token.isBlank()) return@withContext saved
+        if (saved.origin.isBlank()) return@withContext saved
+        val canSignInHostScreen = saved.hostScreenKey.isNotBlank() && saved.pendingLogin == null &&
+            saved.level in setOf("hostscreen", "none")
+        if (saved.token.isBlank()) return@withContext if (canSignInHostScreen) {
+            loginHostScreen(saved.origin, saved.hostScreenKey).copy(theme = saved.theme)
+        } else saved
         val server = ServerAddress.parse(saved.origin)
         val request = Request.Builder().url(server.api("auth/me"))
             .header("Authorization", "Bearer" + " " + saved.token).build()
-        client.newCall(request).awaitResponse().use { response ->
-            if (response.code == 401) throw SignInRequired("Your session ended. Sign in with a passkey, a HOSTSCREEN key, or a current host invitation.")
+        val resumed = client.newCall(request).awaitResponse().use { response ->
+            if (response.code == 401) {
+                if (canSignInHostScreen) return@use null
+                throw SignInRequired("Your session ended. Sign in with a passkey, a HOSTSCREEN key, or a current host invitation.")
+            }
             if (!response.isSuccessful) throw IOException("Server returned HTTP ${response.code}. Sign-in has been preserved.")
             val result = JSONObject(response.body?.string() ?: throw IOException("Empty sign-in response."))
             val level = result.optString("level")
             if (level !in SavedSession.levels) throw IOException("Invalid sign-in response.")
-            saved.copy(level = level, username = result.optJSONObject("user")?.optString("name")
+            saved.copy(level = level, hostScreenKey = saved.hostScreenKey.takeIf { level == "hostscreen" }.orEmpty(),
+                username = result.optJSONObject("user")?.optString("name")
                 ?.trim()?.takeIf { it.length in 1..60 } ?: saved.username)
         }
+        resumed ?: loginHostScreen(saved.origin, saved.hostScreenKey).copy(theme = saved.theme)
     }
 
     suspend fun logout(saved: SavedSession) = withContext(Dispatchers.IO) {

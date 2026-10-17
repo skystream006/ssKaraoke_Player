@@ -54,4 +54,35 @@ class SessionStoreDeviceTest {
             SessionStore(context).use { reopened -> assertNull(reopened.current.pendingLogin) }
         } finally { directory.deleteRecursively() }
     }
+
+    @Test fun hostScreenKeyIsEncryptedAndRemovedOnSignOut() {
+        val target = InstrumentationRegistry.getInstrumentation().targetContext
+        val directory = File(target.cacheDir, "hostscreen-vault-test-${System.nanoTime()}").apply { mkdirs() }
+        val context = object : ContextWrapper(target) { override fun getNoBackupFilesDir(): File = directory }
+        val saved = SavedSession(origin = "https://karaoke.example", token = "device-hostscreen-session",
+            level = "hostscreen", hostScreenKey = " device-fixture-host-key ")
+        try {
+            SessionStore(context).use { store ->
+                store.update(saved)
+                store.flush()
+                assertFalse(store.writeFailed)
+            }
+            val encrypted = File(directory, "session.encrypted").readBytes().toString(Charsets.ISO_8859_1)
+            assertFalse(encrypted.contains(saved.hostScreenKey))
+            assertFalse(encrypted.contains(saved.token))
+            SessionStore(context).use { reopened ->
+                assertEquals(saved, reopened.current)
+                assertFalse(reopened.current.seed().has("hostScreenKey"))
+                reopened.update(reopened.current.expired())
+                reopened.flush()
+            }
+            SessionStore(context).use { reopened ->
+                assertEquals(saved.hostScreenKey, reopened.current.hostScreenKey)
+                assertEquals("", reopened.current.token)
+                reopened.update(reopened.current.signedOut())
+                reopened.flush()
+            }
+            SessionStore(context).use { reopened -> assertEquals("", reopened.current.hostScreenKey) }
+        } finally { directory.deleteRecursively() }
+    }
 }

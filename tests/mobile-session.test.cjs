@@ -24,17 +24,19 @@ test("a recreated WebView restores account and guest sessions before React start
     }
 });
 
-test("HOSTSCREEN keeps its authentication level separately from organizer membership and never saves the key", () => {
+test("HOSTSCREEN keeps its authentication level separately from organizer membership and never exposes the native key", () => {
     const session = storage();
     const local = storage();
     const saved = {
         token: "hostscreen-session", level: "hostscreen", username: "HOSTSCREEN",
         memberId: "screen-member", memberName: "HOSTSCREEN", memberRole: "organizer"
     };
-    restoreSession(session, local, { ...saved, key: "fixture-host-key" });
+    restoreSession(session, local, { ...saved, key: "fixture-host-key", hostScreenKey: "fixture-host-key" });
     assert.deepEqual(readSession(session, local), saved);
     assert.equal(session.getItem("key"), null);
     assert.equal(local.getItem("key"), null);
+    assert.equal(session.getItem("hostScreenKey"), null);
+    assert.equal(local.getItem("hostScreenKey"), null);
     assert.equal(safeLocation("/join", "https://karaoke.example"), "/join");
     assert.equal(safeLocation("/organizer/party-1/screen-member", "https://karaoke.example"), "/organizer/party-1/screen-member");
 });
