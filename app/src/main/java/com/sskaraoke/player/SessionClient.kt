@@ -18,6 +18,7 @@ import okhttp3.Response
 import okio.BufferedSink
 import org.json.JSONObject
 import java.io.IOException
+import java.net.ProtocolException
 import java.time.Instant
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resumeWithException
@@ -58,7 +59,16 @@ class SessionClient(private val client: OkHttpClient = OkHttpClient.Builder()
 
     // The ping is an idempotent GET, so it may try another route after a failed one. A cancelled earlier call marks its
     // route as failed, which would otherwise make the next ping start on a different address and fail without fallback.
-    private val pingClient = exchangeClient.newBuilder().retryOnConnectionFailure(true).build()
+    private val pingClient = exchangeClient.newBuilder().retryOnConnectionFailure(true)
+        .addNetworkInterceptor { chain ->
+            val response = chain.proceed(chain.request())
+            // Reject HTTP errors before OkHttp can retry a 408 or a 503 with Retry-After: 0.
+            if (!response.isSuccessful) {
+                response.close()
+                throw ProtocolException("Server returned HTTP ${response.code}.")
+            }
+            response
+        }.build()
 
     private fun oneShotJsonBody(payload: JSONObject): RequestBody {
         val bytes = payload.toString().toByteArray(Charsets.UTF_8)
