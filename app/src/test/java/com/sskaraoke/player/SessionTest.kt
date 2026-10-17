@@ -4,6 +4,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.launch
+import okhttp3.Dns
 import okhttp3.OkHttpClient
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
@@ -56,9 +57,9 @@ class SessionTest {
             val loopback = InetAddress.getByName("127.0.0.1")
             server.start(loopback, 0)
             server.enqueue(MockResponse())
-            val http = OkHttpClient.Builder().dns {
-                listOf(InetAddress.getByName("127.0.0.2"), loopback)
-            }.build()
+            val http = OkHttpClient.Builder().dns(object : Dns {
+                override fun lookup(hostname: String) = listOf(InetAddress.getByName("127.0.0.2"), loopback)
+            }).build()
             SessionClient(http).ping(server.url("/").newBuilder().host("karaoke.test").build().toString())
             assertEquals("/", server.takeRequest(5, TimeUnit.SECONDS)!!.path)
             assertEquals(1, server.requestCount)
