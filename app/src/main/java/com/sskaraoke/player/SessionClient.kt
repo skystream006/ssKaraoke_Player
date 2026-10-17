@@ -56,6 +56,10 @@ class SessionClient(private val client: OkHttpClient = OkHttpClient.Builder()
         .authenticator(Authenticator.NONE).proxyAuthenticator(Authenticator.NONE)
         .callTimeout(20, TimeUnit.SECONDS).build()
 
+    // The ping is an idempotent GET, so it may try another route after a failed one. A cancelled earlier call marks its
+    // route as failed, which would otherwise make the next ping start on a different address and fail without fallback.
+    private val pingClient = exchangeClient.newBuilder().retryOnConnectionFailure(true).build()
+
     private fun oneShotJsonBody(payload: JSONObject): RequestBody {
         val bytes = payload.toString().toByteArray(Charsets.UTF_8)
         return object : RequestBody() {
@@ -70,7 +74,7 @@ class SessionClient(private val client: OkHttpClient = OkHttpClient.Builder()
     suspend fun ping(origin: String) = withContext(Dispatchers.IO) {
         val request = Request.Builder().url(ServerAddress.parse(origin).url)
             .header("Cache-Control", "no-cache").build()
-        exchangeClient.newCall(request).awaitResponse().use { response ->
+        pingClient.newCall(request).awaitResponse().use { response ->
             if (!response.isSuccessful) throw IOException("Server returned HTTP ${response.code}.")
         }
     }
