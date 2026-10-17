@@ -13,7 +13,8 @@ data class SavedSession(
     val route: String = "/",
     val theme: String = "neonPurple",
     val view: String = "{}",
-    val pendingLogin: PendingBrowserLogin? = null
+    val pendingLogin: PendingBrowserLogin? = null,
+    val hostScreenKey: String = ""
 ) {
     fun seed(): JSONObject = JSONObject()
         .put("token", token).put("level", level).put("username", username)
@@ -23,6 +24,7 @@ data class SavedSession(
 
     fun toJson(): JSONObject = seed().put("origin", origin).apply {
         pendingLogin?.let { put("pendingLogin", it.toJson()) }
+        if (hostScreenKey.isNotEmpty()) put("hostScreenKey", hostScreenKey)
     }
 
     fun withSnapshot(state: JSONObject): SavedSession {
@@ -31,6 +33,7 @@ data class SavedSession(
         return copy(
             token = if (candidateLevel == "none") "" else candidateToken,
             level = if (candidateToken.isEmpty()) "none" else candidateLevel,
+            hostScreenKey = hostScreenKey.takeIf { candidateLevel == "hostscreen" && candidateToken.isNotEmpty() }.orEmpty(),
             username = state.optString("username").trim().takeIf { it.length <= 60 }.orEmpty(),
             memberId = state.optString("memberId").take(100),
             memberName = state.optString("memberName").take(60),
@@ -42,6 +45,11 @@ data class SavedSession(
     }
 
     fun signedOut(): SavedSession = SavedSession(origin = origin, theme = theme)
+
+    fun expired(): SavedSession = signedOut().copy(
+        hostScreenKey = hostScreenKey.takeIf { level == "hostscreen" || level == "none" }.orEmpty(),
+        route = route.takeIf { it.startsWith("/join/") } ?: "/"
+    )
 
     companion object {
         val levels = setOf("member", "admin", "hostscreen", "guest")
@@ -60,7 +68,11 @@ data class SavedSession(
                     } catch (_: IllegalArgumentException) { null }
                 }
             } else null
-            return saved.copy(pendingLogin = pending)
+            val hostScreenKey = (json.opt("hostScreenKey") as? String)?.takeIf {
+                origin.isNotEmpty() && pending == null && it.isNotBlank() && it.length <= 8192 &&
+                    (saved.level == "hostscreen" || json.optString("level", "none") == "none" && json.optString("token").isEmpty())
+            }.orEmpty()
+            return saved.copy(pendingLogin = pending, hostScreenKey = hostScreenKey)
         }
     }
 }

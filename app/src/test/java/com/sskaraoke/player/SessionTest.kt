@@ -110,7 +110,7 @@ class SessionTest {
         }
     }
 
-    @Test fun hostScreenLoginUsesOnlyTheExactKeyAndPersistsOnlyTheRestrictedSession() = runBlocking {
+    @Test fun hostScreenLoginSavesTheExactKeyOnlyInNativeStateAfterSuccess() = runBlocking {
         MockWebServer().use { server ->
             server.enqueue(MockResponse().setBody(hostScreenResponse().toString()))
             val key = " fixture-host-key "
@@ -128,9 +128,122 @@ class SessionTest {
             assertEquals("", saved.memberId)
             assertEquals("", saved.memberRole)
             assertNull(saved.pendingLogin)
-            assertFalse(saved.toJson().toString().contains(key))
+            assertEquals(key, saved.hostScreenKey)
+            assertEquals(key, saved.toJson().getString("hostScreenKey"))
+            assertFalse(saved.seed().toString().contains(key))
+            assertFalse(saved.seed().has("hostScreenKey"))
             assertFalse(saved.seed().has("key"))
             assertEquals(saved, SavedSession.fromJson(saved.toJson()))
+        }
+    }
+
+    @Test fun hostScreenKeySurvivesExpiryButNotSignOutOrAnotherIdentity() {
+        val saved = SavedSession(origin = "https://karaoke.example", token = "valid", level = "hostscreen",
+            hostScreenKey = " fixture-host-key ", memberId = "screen-member", memberRole = "organizer")
+        assertEquals(saved, SavedSession.fromJson(saved.toJson()))
+        assertEquals(saved.hostScreenKey, SavedSession.fromJson(saved.expired().toJson()).hostScreenKey)
+        assertEquals("", saved.expired().token)
+        assertEquals("", saved.expired().memberId)
+        assertEquals("", saved.signedOut().hostScreenKey)
+        val snapshot = saved.seed().put("hostScreenKey", "untrusted-web-key")
+        assertEquals(saved.hostScreenKey, saved.withSnapshot(snapshot).hostScreenKey)
+        assertEquals("", SavedSession(origin = saved.origin).withSnapshot(snapshot).hostScreenKey)
+        for (level in listOf("member", "admin", "guest", "invalid")) {
+            assertEquals("", saved.withSnapshot(snapshot.put("level", level)).hostScreenKey)
+            assertEquals("", SavedSession.fromJson(saved.toJson().put("level", level)).hostScreenKey)
+            assertEquals("", SavedSession.fromJson(saved.toJson().put("level", level).put("token", "")).hostScreenKey)
+        }
+        for (key in listOf<Any>(JSONObject.NULL, 42, " ", "x".repeat(8193))) {
+            assertEquals("", SavedSession.fromJson(saved.toJson().put("hostScreenKey", key)).hostScreenKey)
+        }
+        assertEquals("", SavedSession.fromJson(saved.toJson().put("origin", "")).hostScreenKey)
+        assertEquals("", SavedSession.fromJson(saved.expired().toJson()
+            .put("pendingLogin", BrowserAuth.begin(saved.origin).toJson())).hostScreenKey)
+    }
+
+    @Test fun expiredHostScreenAutomaticallySignsInOnceAndDiscardsOldPartyIdentity() = runBlocking {
+        MockWebServer().use { server ->
+            server.enqueue(MockResponse().setResponseCode(401))
+            server.enqueue(MockResponse().setBody(hostScreenResponse().toString()))
+            val saved = SavedSession(origin = ServerAddress.parse(server.url("/").toString()).origin,
+                token = "expired-session", level = "hostscreen", hostScreenKey = " fixture-host-key ",
+                memberId = "old-member", memberName = "Old screen", memberRole = "organizer",
+                route = "/organizer/old-party/old-member", theme = "forest", view = """{"tab":"queue"}""")
+            val resumed = SessionClient().resume(SavedSession.fromJson(saved.toJson()))
+            assertEquals("hostscreen-session", resumed.token)
+            assertEquals("hostscreen", resumed.level)
+            assertEquals(saved.hostScreenKey, resumed.hostScreenKey)
+            assertEquals(saved.theme, resumed.theme)
+            assertEquals("/join", resumed.route)
+            assertEquals("", resumed.memberId)
+            assertEquals("", resumed.memberRole)
+            assertEquals("{}", resumed.view)
+            assertEquals("/api/auth/me", server.takeRequest().path)
+            val login = server.takeRequest()
+            assertEquals("/api/auth/hostscreen/login", login.path)
+            assertNull(login.getHeader("Authorization"))
+            assertEquals(saved.hostScreenKey, JSONObject(login.body.readUtf8()).getString("key"))
+            assertEquals(2, server.requestCount)
+        }
+    }
+
+    @Test fun hostScreenCanSignInAfterHostedExpiryAndProcessRecreation() = runBlocking {
+        MockWebServer().use { server ->
+            server.enqueue(MockResponse().setBody(hostScreenResponse().toString()))
+            val saved = SavedSession(origin = server.url("/").toString(), token = "expired", level = "hostscreen",
+                hostScreenKey = "fixture-host-key").expired()
+            val restored = SavedSession.fromJson(saved.toJson())
+            assertEquals("hostscreen-session", SessionClient().resume(restored).token)
+            assertEquals("/api/auth/hostscreen/login", server.takeRequest().path)
+            assertEquals(1, server.requestCount)
+        }
+    }
+
+    @Test fun automaticHostScreenLoginFailuresDoNotLoopOrLeakTheSavedKey() = runBlocking {
+        for (status in listOf(302, 307, 401, 403, 429, 503)) MockWebServer().use { server ->
+            server.enqueue(MockResponse().setResponseCode(401))
+            server.enqueue(MockResponse().setResponseCode(status).setHeader("Location", "/redirect")
+                .setBody("fixture-host-key"))
+            server.enqueue(MockResponse().setBody(hostScreenResponse().toString()))
+            val saved = SavedSession(origin = server.url("/").toString(), token = "expired", level = "hostscreen",
+                hostScreenKey = "fixture-host-key")
+            try {
+                SessionClient().resume(saved)
+                fail("Expected automatic HOSTSCREEN sign-in failure")
+            } catch (failure: HostScreenSignInException) {
+                assertEquals(status == 401 || status == 403, failure.credentialsRejected)
+                assertFalse(failure.stackTraceToString().contains(saved.hostScreenKey))
+                assertEquals(2, server.requestCount)
+            }
+        }
+    }
+
+    @Test fun unavailableHostScreenVerificationNeverSubmitsTheSavedKey() = runBlocking {
+        for (status in listOf(302, 403, 429, 503)) MockWebServer().use { server ->
+            server.enqueue(MockResponse().setResponseCode(status).setHeader("Location", "/redirect"))
+            val saved = SavedSession(origin = server.url("/").toString(), token = "valid", level = "hostscreen",
+                hostScreenKey = "fixture-host-key")
+            try {
+                SessionClient().resume(saved)
+                fail("Expected verification failure")
+            } catch (failure: IOException) {
+                assertFalse(failure is HostScreenSignInException)
+                assertFalse(failure is SignInRequired)
+                assertEquals(1, server.requestCount)
+                assertEquals("/api/auth/me", server.takeRequest().path)
+            }
+        }
+    }
+
+    @Test fun legacyHostScreenAndOtherAccountsCannotAutomaticallyUseAKey() = runBlocking {
+        for (level in listOf("hostscreen", "member", "admin", "guest")) MockWebServer().use { server ->
+            server.enqueue(MockResponse().setResponseCode(401))
+            val saved = SavedSession(origin = server.url("/").toString(), token = "expired", level = level,
+                hostScreenKey = if (level == "hostscreen") "" else "fixture-host-key")
+            try {
+                SessionClient().resume(saved)
+                fail("Expected manual sign-in requirement")
+            } catch (_: SignInRequired) { assertEquals(1, server.requestCount) }
         }
     }
 
@@ -180,6 +293,7 @@ class SessionTest {
             server.enqueue(MockResponse().setBody(body.toString()))
             server.enqueue(MockResponse().setResponseCode(204))
             val saved = SavedSession(origin = server.url("/").toString(), token = "hostscreen-session", level = "hostscreen",
+                hostScreenKey = "fixture-host-key",
                 username = "HOSTSCREEN", memberId = "screen-member", memberName = "HOSTSCREEN", memberRole = "organizer",
                 route = "/organizer/party-1/screen-member")
             val client = SessionClient()
@@ -191,6 +305,9 @@ class SessionTest {
                 assertEquals(listOf("Bearer", saved.token).joinToString(" "), request.getHeader("Authorization"))
             }
             assertEquals("", saved.signedOut().token)
+            assertEquals("", saved.signedOut().hostScreenKey)
+            assertEquals(saved.signedOut(), client.resume(saved.signedOut()))
+            assertEquals(2, server.requestCount)
         }
     }
 

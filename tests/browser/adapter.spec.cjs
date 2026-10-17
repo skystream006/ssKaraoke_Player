@@ -49,7 +49,7 @@ test.beforeEach(async ({ context, page, savedSession, startupSession }) => {
             const event=JSON.parse(message);
             window.nativeEvents.push(event);
             if(event.type==='snapshot') writeStorage.call(sessionStorage,'native-test-checkpoint',JSON.stringify(event.state));
-            if(event.type==='logout') {
+            if(event.type==='logout' || event.type==='expired') {
                 const previous=JSON.parse(sessionStorage.getItem('native-test-checkpoint') || '{}');
                 writeStorage.call(sessionStorage,'native-test-checkpoint',JSON.stringify({
                     ...previous, token:'', level:'none', memberId:'', memberName:'', memberRole:'', route:'/', view:{}
@@ -167,7 +167,7 @@ test("the server auth:expired event clears the checkpoint without resurrecting i
         window.dispatchEvent(new Event("auth:expired"));
     });
     await expect(page.locator(".passkey-panel")).toBeVisible();
-    expect(await authEvents(page)).toEqual([{ type: "logout" }]);
+    expect(await authEvents(page)).toEqual([{ type: "expired" }]);
     await expect.poll(async () => (await checkpoint(page)).token).toBe("");
     await recreateWebView(page);
     await expect(page.locator(".passkey-panel")).toBeVisible();
@@ -446,7 +446,7 @@ test.describe("fixture AuthContext contract", () => {
             await page.route("**/api/auth/me", interception => interception.fulfill({ status: 401, json: { error: "Expired" } }));
             await page.evaluate(transport => window.fixtureAuth.rehydrate(transport), transport);
             await expect(page.locator(".passkey-panel")).toBeVisible();
-            expect(await authEvents(page)).toEqual([{ type: "logout" }]);
+            expect(await authEvents(page)).toEqual([{ type: "expired" }]);
             expect((await checkpoint(page)).token).toBe("");
             await recreateWebView(page);
             await expect(page.locator(".passkey-panel")).toBeVisible();

@@ -320,7 +320,8 @@ class NativeUiTest {
             views.filterIsInstance<MaterialButton>().single { it.text == "Sign in" }.performClick()
             assertEquals("Enter the HOSTSCREEN login key.", views.filterIsInstance<TextInputLayout>().single().error.toString())
             input.setText("fixture-host-key")
-            assertFalse(store.current.toJson().toString().contains("fixture-host-key"))
+            assertEquals("fixture-host-key", store.current.hostScreenKey)
+            assertFalse(store.current.seed().toString().contains("fixture-host-key"))
             views.filterIsInstance<MaterialButton>().single { it.text == "Back to sign-in options" }.performClick()
             assertEquals("", input.text.toString())
             assertTrue(descendants(activity.window.decorView).filterIsInstance<MaterialButton>().any { it.text == "Sign in with passkey" })
@@ -366,6 +367,122 @@ class NativeUiTest {
         }
     }
 
+    @Test fun savedHostScreenKeyAutomaticallyReplacesExpiredNativeSession() {
+        MockWebServer().use { server ->
+            server.enqueue(MockResponse().setResponseCode(401))
+            server.enqueue(MockResponse().setBody(JSONObject().put("token", "renewed-hostscreen-session").put("level", "hostscreen")
+                .put("user", JSONObject().put("name", "HOSTSCREEN"))
+                .put("expiresAt", Instant.now().plusSeconds(3600).toString()).toString()))
+            Robolectric.buildActivity(PreviewActivity::class.java).setup().use { controller ->
+                val activity = controller.get()
+                val store = ReflectionHelpers.getField<SessionStore>(activity, "store")
+                store.update(SavedSession(origin = ServerAddress.parse(server.url("/").toString()).origin,
+                    token = "expired-session", level = "hostscreen", hostScreenKey = " fixture-host-key ",
+                    memberId = "old-member", memberRole = "organizer", route = "/organizer/old-party/old-member", theme = "forest"))
+                ReflectionHelpers.callInstanceMethod<Unit>(activity, "connect")
+                awaitToken(store, "renewed-hostscreen-session")
+                assertEquals("/api/auth/me", server.takeRequest(5, TimeUnit.SECONDS)?.path)
+                val request = server.takeRequest(5, TimeUnit.SECONDS)!!
+                assertEquals("/api/auth/hostscreen/login", request.path)
+                assertEquals(" fixture-host-key ", JSONObject(request.body.readUtf8()).getString("key"))
+                assertEquals(" fixture-host-key ", store.current.hostScreenKey)
+                assertEquals("/join", store.current.route)
+                assertEquals("", store.current.memberId)
+                assertEquals("forest", store.current.theme)
+                assertEquals(2, server.requestCount)
+            }
+        }
+    }
+
+    @Test fun rejectedSavedHostScreenKeyReturnsToManualLoginWithoutRetrying() {
+        MockWebServer().use { server ->
+            server.enqueue(MockResponse().setResponseCode(401))
+            server.enqueue(MockResponse().setResponseCode(401))
+            Robolectric.buildActivity(PreviewActivity::class.java).setup().use { controller ->
+                val activity = controller.get()
+                val store = ReflectionHelpers.getField<SessionStore>(activity, "store")
+                store.update(SavedSession(origin = ServerAddress.parse(server.url("/").toString()).origin,
+                    token = "expired-session", level = "hostscreen", hostScreenKey = "rejected-fixture-key"))
+                ReflectionHelpers.callInstanceMethod<Unit>(activity, "connect")
+                awaitText(activity, "Invalid HOSTSCREEN login key.")
+                assertEquals("", store.current.hostScreenKey)
+                assertEquals("", store.current.token)
+                assertEquals("", descendants(activity.window.decorView).filterIsInstance<TextInputEditText>().single().text.toString())
+                assertEquals(2, server.requestCount)
+            }
+        }
+    }
+
+    @Test fun temporaryAutomaticHostScreenLoginFailurePreservesKeyAndOffersRetry() {
+        MockWebServer().use { server ->
+            server.enqueue(MockResponse().setResponseCode(503))
+            Robolectric.buildActivity(PreviewActivity::class.java).setup().use { controller ->
+                val activity = controller.get()
+                val store = ReflectionHelpers.getField<SessionStore>(activity, "store")
+                val saved = SavedSession(origin = ServerAddress.parse(server.url("/").toString()).origin,
+                    hostScreenKey = "fixture-host-key")
+                store.update(saved)
+                ReflectionHelpers.callInstanceMethod<Unit>(activity, "connect")
+                awaitText(activity, "Connection unavailable")
+                assertEquals(saved, store.current)
+                assertEquals("/api/auth/hostscreen/login", server.takeRequest(5, TimeUnit.SECONDS)?.path)
+                assertEquals(1, server.requestCount)
+                assertTrue(descendants(activity.window.decorView).filterIsInstance<MaterialButton>().any { it.text == "Try again" })
+            }
+        }
+    }
+
+    @Test fun hostedExpiryKeepsHostScreenKeyButExplicitLogoutForgetsIt() {
+        for (event in listOf("expired", "logout")) {
+            MockWebServer().use { server ->
+                server.enqueue(MockResponse().setBody(JSONObject().put("token", "renewed-hostscreen-session").put("level", "hostscreen")
+                    .put("user", JSONObject().put("name", "HOSTSCREEN"))
+                    .put("expiresAt", Instant.now().plusSeconds(3600).toString()).toString()))
+                Robolectric.buildActivity(PreviewActivity::class.java).setup().use { controller ->
+                    val activity = controller.get()
+                    val store = ReflectionHelpers.getField<SessionStore>(activity, "store")
+                    store.update(SavedSession(origin = ServerAddress.parse(server.url("/").toString()).origin,
+                        token = "expired-session", level = "hostscreen", hostScreenKey = "fixture-host-key"))
+                    ReflectionHelpers.callInstanceMethod<Unit>(activity, "receiveMessage",
+                        ReflectionHelpers.ClassParameter.from(JSONObject::class.java, JSONObject().put("type", event)))
+                    if (event == "expired") {
+                        assertEquals("fixture-host-key", store.current.hostScreenKey)
+                        awaitToken(store, "renewed-hostscreen-session")
+                        assertEquals("/api/auth/hostscreen/login", server.takeRequest(5, TimeUnit.SECONDS)?.path)
+                    } else {
+                        awaitText(activity, "Sign in to karaoke")
+                        assertEquals("", store.current.hostScreenKey)
+                        assertEquals("", store.current.token)
+                        assertEquals("/", server.takeRequest(5, TimeUnit.SECONDS)?.path)
+                    }
+                    assertEquals(1, server.requestCount)
+                }
+            }
+        }
+    }
+
+    @Test fun switchingUserOrServerForgetsSavedHostScreenKeyAfterRevocation() {
+        for (changeServer in listOf(false, true)) MockWebServer().use { server ->
+            server.enqueue(MockResponse().setResponseCode(204))
+            server.enqueue(MockResponse())
+            Robolectric.buildActivity(PreviewActivity::class.java).setup().use { controller ->
+                val activity = controller.get()
+                val store = ReflectionHelpers.getField<SessionStore>(activity, "store")
+                val origin = ServerAddress.parse(server.url("/").toString()).origin
+                store.update(SavedSession(origin = origin, token = "hostscreen-session", level = "hostscreen",
+                    hostScreenKey = "fixture-host-key"))
+                ReflectionHelpers.callInstanceMethod<Unit>(activity, "signOut",
+                    ReflectionHelpers.ClassParameter.from(Boolean::class.javaPrimitiveType, changeServer))
+                awaitText(activity, if (changeServer) "Connect to your server" else "Sign in to karaoke")
+                assertEquals("/api/auth/logout", server.takeRequest(5, TimeUnit.SECONDS)?.path)
+                assertEquals("", store.current.hostScreenKey)
+                assertEquals("", store.current.token)
+                assertEquals(if (changeServer) "" else origin, store.current.origin)
+                assertEquals(if (changeServer) 1 else 2, server.requestCount)
+            }
+        }
+    }
+
     @Test fun backgroundingHostScreenLoginCancelsTheRequestWithoutSavingTheKey() {
         MockWebServer().use { server ->
             server.enqueue(MockResponse())
@@ -390,6 +507,7 @@ class NativeUiTest {
                 assertEquals("/", server.takeRequest(5, TimeUnit.SECONDS)?.path)
                 assertEquals("", input.text.toString())
                 assertEquals("", store.current.token)
+                assertEquals("", store.current.hostScreenKey)
                 assertNull(store.current.pendingLogin)
                 assertTrue(descendants(activity.window.decorView).filterIsInstance<MaterialButton>().any { it.text == "Sign in as HOSTSCREEN" })
                 assertEquals(3, server.requestCount)
@@ -672,6 +790,15 @@ class NativeUiTest {
             shadowOf(Looper.getMainLooper()).idle()
             if (descendants(activity.window.decorView).filterIsInstance<TextView>().any { it.text == label }) return
             Thread.sleep(10)
+        }
+
+        private fun awaitToken(store: SessionStore, token: String) {
+            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
+            while (store.current.token != token && System.nanoTime() < deadline) {
+                shadowOf(Looper.getMainLooper()).idle()
+                Thread.sleep(10)
+            }
+            assertEquals(token, store.current.token)
         }
         fail("Expected screen text: $label")
     }

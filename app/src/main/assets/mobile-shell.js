@@ -10,6 +10,7 @@
     const scrollSelectors = [".sidebar-body", ".guest-main", ".queue-section", ".search-section"];
     let snapshotTimer;
     let authenticationUnavailable = false;
+    let authenticationExpired = false;
     let restoring = true;
     let lastSnapshot = "";
     let browserAuthScreen = "";
@@ -27,7 +28,7 @@
     }
 
     function snapshot() {
-        if (authenticationUnavailable) return;
+        if (authenticationUnavailable || authenticationExpired) return;
         const scroll = { window: Math.round(window.scrollY) };
         for (const selector of scrollSelectors) {
             const element = document.querySelector(selector);
@@ -52,7 +53,7 @@
     }
 
     function routeBrowserAuthentication() {
-        if (authenticationUnavailable) return;
+        if (authenticationUnavailable || authenticationExpired) return;
         const screen = location.pathname.replace(/\/$/, "") === "/account" ? "account"
             : !sessionStorage.getItem("authToken") &&
                 document.querySelector(".passkey-panel[aria-labelledby='passkey-title']") ? "signin" : "";
@@ -80,9 +81,18 @@
         } catch (_) { return ""; }
     }
 
+    function expireSession() {
+        if (authenticationUnavailable || authenticationExpired || !sessionStorage.getItem("authToken")) return;
+        authenticationExpired = true;
+        send("expired");
+    }
+
+    window.addEventListener("auth:expired", expireSession, { capture: true });
+
     function sessionResponse(path, token, status) {
         // AuthContext clears storage on any /me failure, including temporary outages.
         if (path !== "/api/auth/me" || !token || token !== sessionStorage.getItem("authToken")) return;
+        if (status === 401) { expireSession(); return; }
         if (status !== 401 && (status < 200 || status >= 300) && !authenticationUnavailable) {
             authenticationUnavailable = true;
             send("unavailable");
@@ -133,7 +143,7 @@
             const signingOut = this === sessionStorage && sessionStorage.getItem("authToken") &&
                 (method === "clear" || method === "removeItem" && key === "authToken");
             const result = original.apply(this, arguments);
-            if (signingOut && !authenticationUnavailable) send("logout");
+            if (signingOut && !authenticationUnavailable && !authenticationExpired) send("logout");
             if (this === sessionStorage && key === "authLevel" || this === localStorage && key === "defaultUsername") snapshot();
             if (this === sessionStorage || this === localStorage) scheduleSnapshot();
             return result;
