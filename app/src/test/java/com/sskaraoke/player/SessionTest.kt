@@ -12,6 +12,7 @@ import org.json.JSONObject
 import org.junit.Assert.*
 import org.junit.Test
 import java.io.IOException
+import java.net.InetAddress
 import java.time.Instant
 import java.util.concurrent.TimeUnit
 
@@ -31,10 +32,13 @@ class SessionTest {
     }
 
     @Test fun pingRejectsHttpErrorsWithoutFollowingRedirects() = runBlocking {
-        for (status in listOf(302, 307, 401, 403, 404, 408, 429, 500, 503)) {
+        for ((status, retryAfter) in listOf(302, 307, 401, 403, 404, 408, 429, 500, 503)
+            .map { it to null } + listOf(408 to "0", 503 to "0")) {
             MockWebServer().use { server ->
-                server.enqueue(MockResponse().setResponseCode(status).setHeader("Location", "/other")
-                    .setBody("untrusted server content"))
+                val response = MockResponse().setResponseCode(status).setHeader("Location", "/other")
+                    .setBody("untrusted server content")
+                if (retryAfter != null) response.setHeader("Retry-After", retryAfter)
+                server.enqueue(response)
                 server.enqueue(MockResponse())
                 try {
                     SessionClient().ping(server.url("/").toString())
@@ -44,6 +48,20 @@ class SessionTest {
                     assertEquals(1, server.requestCount)
                 }
             }
+        }
+    }
+
+    @Test fun pingFallsBackToAnotherAddressAfterConnectionFailure() = runBlocking {
+        MockWebServer().use { server ->
+            val loopback = InetAddress.getByName("127.0.0.1")
+            server.start(loopback, 0)
+            server.enqueue(MockResponse())
+            val http = OkHttpClient.Builder().dns {
+                listOf(InetAddress.getByName("127.0.0.2"), loopback)
+            }.build()
+            SessionClient(http).ping(server.url("/").newBuilder().host("karaoke.test").build().toString())
+            assertEquals("/", server.takeRequest(5, TimeUnit.SECONDS)!!.path)
+            assertEquals(1, server.requestCount)
         }
     }
 
